@@ -21,6 +21,13 @@ import streamlit as st
 from pandas.errors import ParserError
 
 from main import run_pipeline
+from src.dataset_manager import (
+    delete_dataset,
+    get_dataset_info,
+    list_datasets,
+    load_dataset,
+    save_dataset,
+)
 from src.pace import load_historical_data
 from src.schema import auto_map_columns
 from src.yoy import build_yoy_comparison, summarize_yoy
@@ -212,13 +219,143 @@ st.title("Hotel RMS - Forward Pricing Simulator")
 st.write("Upload historical + future on-books reports, run demand-aware pricing simulation, and review explainable recommendations.")
 
 with st.sidebar:
+    # ============================================================================
+    # DATASET MANAGEMENT
+    # ============================================================================
+    st.header("Datasets")
+    
+    dataset_tab1, dataset_tab2, dataset_tab3 = st.tabs(["Load", "Save", "Manage"])
+    
+    # Load Dataset Tab
+    with dataset_tab1:
+        st.subheader("Load Dataset")
+        saved_datasets = list_datasets()
+        if saved_datasets:
+            selected_dataset = st.selectbox(
+                "Select saved dataset",
+                options=saved_datasets,
+                key="load_dataset_select"
+            )
+            
+            if st.button("Load Dataset", key="load_dataset_btn"):
+                hist_df, fut_df, events_df, budget_df, hist_map, fut_map, use_manual_rooms, manual_rooms = load_dataset(selected_dataset)
+                if hist_df is not None and fut_df is not None:
+                    st.session_state.loaded_dataset_name = selected_dataset
+                    st.session_state.historical_df = hist_df
+                    st.session_state.future_df = fut_df
+                    st.session_state.events_df = events_df
+                    st.session_state.budget_df = budget_df
+                    st.session_state.historical_mapping = hist_map
+                    st.session_state.future_mapping = fut_map
+                    st.session_state.use_manual_rooms_available = use_manual_rooms
+                    st.session_state.manual_rooms_available = manual_rooms
+                    st.session_state.load_dataset_success = True
+                else:
+                    st.error("Failed to load dataset")
+            
+            if "load_dataset_success" in st.session_state and st.session_state.load_dataset_success:
+                dataset_info = get_dataset_info(selected_dataset)
+                if dataset_info:
+                    st.success(f"✓ Loaded: {selected_dataset}")
+                    st.caption(f"Created: {dataset_info.get('created_at', 'N/A')[:10]}")
+                    st.caption(f"Rows: {dataset_info.get('rows_historical', 0)} hist / {dataset_info.get('rows_future', 0)} future")
+        else:
+            st.info("No saved datasets yet. Save one using the 'Save' tab.")
+    
+    # Save Dataset Tab
+    with dataset_tab2:
+        st.subheader("Save Current Dataset")
+        dataset_name = st.text_input(
+            "Dataset name",
+            key="save_dataset_name",
+            placeholder="e.g., Q2_2025_April"
+        )
+        
+        if st.button("Save Dataset", key="save_dataset_btn"):
+            if "historical_df" in st.session_state and "future_df" in st.session_state:
+                success = save_dataset(
+                    name=dataset_name,
+                    historical_df=st.session_state.historical_df,
+                    future_df=st.session_state.future_df,
+                    events_df=st.session_state.get("events_df"),
+                    budget_df=st.session_state.get("budget_df"),
+                    historical_mapping=st.session_state.get("historical_mapping"),
+                    future_mapping=st.session_state.get("future_mapping"),
+                    use_manual_rooms_available=st.session_state.get("use_manual_rooms_available", False),
+                    manual_rooms_available=st.session_state.get("manual_rooms_available"),
+                )
+                if success:
+                    st.success(f"✓ Saved dataset: {dataset_name}")
+                else:
+                    st.error("Failed to save dataset")
+            else:
+                st.warning("Load or upload data first before saving")
+    
+    # Manage Datasets Tab
+    with dataset_tab3:
+        st.subheader("Manage Datasets")
+        saved_datasets = list_datasets()
+        if saved_datasets:
+            dataset_to_delete = st.selectbox(
+                "Select dataset to delete",
+                options=saved_datasets,
+                key="delete_dataset_select"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🗑️ Delete", key="delete_dataset_btn", use_container_width=True):
+                    if delete_dataset(dataset_to_delete):
+                        st.success(f"✓ Deleted: {dataset_to_delete}")
+                        st.rerun()
+                    else:
+                        st.error("Failed to delete dataset")
+            
+            with col2:
+                if st.button("ℹ️ Info", key="info_dataset_btn", use_container_width=True):
+                    info = get_dataset_info(dataset_to_delete)
+                    if info:
+                        st.json(info)
+            
+            st.divider()
+            st.subheader("All Datasets")
+            for ds_name in saved_datasets:
+                info = get_dataset_info(ds_name)
+                with st.expander(f"📁 {ds_name}"):
+                    st.caption(f"Created: {info.get('created_at', 'N/A')[:10]}")
+                    st.caption(f"Updated: {info.get('updated_at', 'N/A')[:10]}")
+                    st.caption(f"Rows: {info.get('rows_historical', 0)} historical / {info.get('rows_future', 0)} future")
+                    if info.get('has_events'):
+                        st.caption("✓ Has events data")
+                    if info.get('has_budget'):
+                        st.caption("✓ Has budget data")
+        else:
+            st.info("No datasets to manage yet")
+    
+    st.divider()
+    
+    # ============================================================================
+    # PRICING CONFIGURATION
+    # ============================================================================
     st.header("Pricing Configuration")
-    use_manual_rooms_available = st.checkbox("Manually set total rooms for all dates", value=False)
+    use_manual_rooms_available = st.checkbox(
+        "Manually set total rooms for all dates", 
+        value=st.session_state.get("use_manual_rooms_available", False)
+    )
     manual_rooms_available = None
     if use_manual_rooms_available:
         manual_rooms_available = int(
-            st.number_input("Manual rooms available", min_value=0, value=100, step=1)
+            st.number_input(
+                "Manual rooms available", 
+                min_value=0, 
+                value=st.session_state.get("manual_rooms_available", 100), 
+                step=1
+            )
         )
+    
+    # Update session state with current values
+    st.session_state.use_manual_rooms_available = use_manual_rooms_available
+    st.session_state.manual_rooms_available = manual_rooms_available
 
     rate_floor = st.number_input("Rate floor", min_value=0.0, value=99.0, step=1.0)
     rate_ceiling = st.number_input("Rate ceiling", min_value=0.0, value=399.0, step=1.0)
@@ -231,21 +368,79 @@ with st.sidebar:
     output_base = st.text_input("Output folder", value="outputs")
 
 st.subheader("Uploads")
-historical_file = st.file_uploader("Historical PMS report (CSV/XLSX)", type=["csv", "xlsx", "xls"])
-future_file = st.file_uploader("Future on-books report (CSV/XLSX)", type=["csv", "xlsx", "xls"])
-events_file = st.file_uploader("Optional events.csv", type=["csv"])
-budget_file = st.file_uploader("Optional budget (CSV/XLSX)", type=["csv", "xlsx", "xls"])
 
-historical_mapping: Dict[str, str] = {}
-future_mapping: Dict[str, str] = {}
+# Check if dataset was loaded from session state
+if "historical_df" in st.session_state and "future_df" in st.session_state:
+    st.info(f"✓ Using loaded dataset: **{st.session_state.get('loaded_dataset_name', 'Loaded Dataset')}**")
+    historical_file = None
+    future_file = None
+    events_file = None
+    budget_file = None
+    hist_preview = st.session_state.historical_df
+    fut_preview = st.session_state.future_df
+    
+    # Load saved mappings and fill in any missing columns with auto-mapping
+    historical_mapping = st.session_state.get("historical_mapping", {})
+    auto_hist_mapping = auto_map_columns(hist_preview)
+    # Merge: saved mappings take precedence, auto-mapping fills gaps
+    for key, value in auto_hist_mapping.items():
+        if key not in historical_mapping:
+            historical_mapping[key] = value
+    
+    future_mapping = st.session_state.get("future_mapping", {})
+    auto_fut_mapping = auto_map_columns(fut_preview)
+    # Merge: saved mappings take precedence, auto-mapping fills gaps
+    for key, value in auto_fut_mapping.items():
+        if key not in future_mapping:
+            future_mapping[key] = value
+    
+    # Update session state with completed mappings
+    st.session_state.historical_mapping = historical_mapping
+    st.session_state.future_mapping = future_mapping
+    
+    if st.button("Clear Loaded Dataset", key="clear_dataset_btn"):
+        for key in ["historical_df", "future_df", "events_df", "budget_df", "loaded_dataset_name", 
+                    "historical_mapping", "future_mapping", "load_dataset_success",
+                    "use_manual_rooms_available", "manual_rooms_available"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+else:
+    # Standard file upload
+    historical_file = st.file_uploader("Historical PMS report (CSV/XLSX)", type=["csv", "xlsx", "xls"])
+    future_file = st.file_uploader("Future on-books report (CSV/XLSX)", type=["csv", "xlsx", "xls"])
+    events_file = st.file_uploader("Optional events.csv", type=["csv"])
+    budget_file = st.file_uploader("Optional budget (CSV/XLSX)", type=["csv", "xlsx", "xls"])
+    
+    hist_preview = None
+    fut_preview = None
+    historical_mapping: Dict[str, str] = {}
+    future_mapping: Dict[str, str] = {}
+    
+    if historical_file is not None:
+        hist_preview = _read_uploaded_table(historical_file)
+        st.session_state.historical_df = hist_preview
+        st.caption(f"Historical columns: {', '.join([str(c) for c in hist_preview.columns])}")
+    
+    if future_file is not None:
+        fut_preview = _read_uploaded_table(future_file)
+        st.session_state.future_df = fut_preview
+        st.caption(f"Future columns: {', '.join([str(c) for c in fut_preview.columns])}")
+    
+    if events_file is not None:
+        events_preview = _read_uploaded_table(events_file)
+        st.session_state.events_df = events_preview
+    
+    if budget_file is not None:
+        budget_preview = _read_uploaded_table(budget_file)
+        st.session_state.budget_df = budget_preview
 
-if historical_file is not None:
-    hist_preview = _read_uploaded_table(historical_file)
-    st.caption(f"Historical columns: {', '.join([str(c) for c in hist_preview.columns])}")
+if hist_preview is not None:
     historical_required = ["stay_date", "rooms_sold", "room_revenue"]
     if not use_manual_rooms_available:
         historical_required.insert(1, "rooms_available")
     historical_mapping = _mapping_ui(hist_preview, historical_required, "historical")
+    st.session_state.historical_mapping = historical_mapping
     with st.expander("Historical preview", expanded=False):
         st.dataframe(hist_preview.head(40), use_container_width=True)
 
@@ -266,13 +461,13 @@ if historical_file is not None:
         if hist_adr_choice != "(auto)":
             historical_mapping["adr"] = hist_adr_choice
 
-if future_file is not None:
-    fut_preview = _read_uploaded_table(future_file)
+if fut_preview is not None:
     st.caption(f"Future columns: {', '.join([str(c) for c in fut_preview.columns])}")
     future_required = ["stay_date", "rooms_sold"]
     if not use_manual_rooms_available:
         future_required.insert(1, "rooms_available")
     future_mapping = _mapping_ui(fut_preview, future_required, "future")
+    st.session_state.future_mapping = future_mapping
     with st.expander("Future preview", expanded=False):
         st.dataframe(fut_preview.head(40), use_container_width=True)
 
@@ -296,27 +491,45 @@ if future_file is not None:
 run_clicked = st.button("Run Pricing Simulation", type="primary")
 
 if run_clicked:
-    if historical_file is None:
-        st.error("Upload a historical PMS report first.")
+    if hist_preview is None:
+        st.error("Upload or load a historical PMS report first.")
+    elif fut_preview is None:
+        st.error("Upload or load a future on-books report first.")
     else:
         try:
             workspace_root = Path(__file__).parent
             uploads_dir = workspace_root / "outputs" / "_uploads"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            historical_path = _save_uploaded_file(historical_file, uploads_dir / f"{timestamp}_{historical_file.name}")
+            # Handle file uploads (save them) or loaded datasets (use existing paths)
+            if historical_file is not None:
+                historical_path = _save_uploaded_file(historical_file, uploads_dir / f"{timestamp}_{historical_file.name}")
+            else:
+                # For loaded datasets, create a temporary CSV in uploads
+                historical_path = uploads_dir / f"{timestamp}_historical_loaded.csv"
+                hist_preview.to_csv(historical_path, index=False)
 
             future_path = None
             if future_file is not None:
                 future_path = str(_save_uploaded_file(future_file, uploads_dir / f"{timestamp}_{future_file.name}"))
+            else:
+                # For loaded datasets, create a temporary CSV in uploads
+                future_path = str(uploads_dir / f"{timestamp}_future_loaded.csv")
+                fut_preview.to_csv(future_path, index=False)
 
             events_path = None
             if events_file is not None:
                 events_path = str(_save_uploaded_file(events_file, uploads_dir / f"{timestamp}_{events_file.name}"))
+            elif "events_df" in st.session_state and st.session_state.events_df is not None:
+                events_path = str(uploads_dir / f"{timestamp}_events_loaded.csv")
+                st.session_state.events_df.to_csv(events_path, index=False)
 
             budget_path = None
             if budget_file is not None:
                 budget_path = str(_save_uploaded_file(budget_file, uploads_dir / f"{timestamp}_{budget_file.name}"))
+            elif "budget_df" in st.session_state and st.session_state.budget_df is not None:
+                budget_path = str(uploads_dir / f"{timestamp}_budget_loaded.csv")
+                st.session_state.budget_df.to_csv(budget_path, index=False)
 
             progress = st.progress(0, text="Running pipeline")
             with st.status("Executing demand forecast and pricing simulation", expanded=True) as status:

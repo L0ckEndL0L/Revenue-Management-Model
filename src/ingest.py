@@ -17,6 +17,43 @@ from src.schema import (
 )
 
 
+def _drop_report_artifact_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove known report artifact rows (page breaks, repeated headers, totals)."""
+    if df.empty:
+        return df
+
+    cleaned = df.copy()
+    row_text = (
+        cleaned.fillna("")
+        .astype(str)
+        .agg(" ".join, axis=1)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str.lower()
+    )
+
+    # Repeated header rows inserted by PDF/print page breaks in PMS exports.
+    repeated_header_mask = (
+        row_text.str.contains(r"\broom\s*revenue\b", regex=True, na=False)
+        & row_text.str.contains(r"\badr\b", regex=True, na=False)
+        & row_text.str.contains(r"\ba\b", regex=True, na=False)
+        & row_text.str.contains(r"\bc\b", regex=True, na=False)
+        & row_text.str.contains(r"\bi\b", regex=True, na=False)
+    )
+
+    # Footer aggregate lines should not be treated as stay_date rows.
+    totals_mask = row_text.str.startswith("totals:", na=False)
+
+    # Drop extra repeated date header rows that can appear mid-file.
+    duplicate_date_header_mask = row_text.str.startswith("date occupancy", na=False)
+
+    artifact_mask = repeated_header_mask | totals_mask | duplicate_date_header_mask
+    if artifact_mask.any():
+        cleaned = cleaned.loc[~artifact_mask].copy()
+
+    return cleaned
+
+
 def load_file(file_path: str) -> pd.DataFrame:
     """
     Load data from CSV or Excel file.
@@ -56,6 +93,8 @@ def load_file(file_path: str) -> pd.DataFrame:
                 if header_row is not None:
                     local_df = pd.read_csv(path, skiprows=header_row)
 
+            local_df = _drop_report_artifact_rows(local_df)
+
             return local_df
 
         fallback_errors = []
@@ -86,6 +125,7 @@ def load_file(file_path: str) -> pd.DataFrame:
                                 quoting=csv.QUOTE_NONE,
                                 on_bad_lines='skip',
                             )
+                            df = _drop_report_artifact_rows(df)
                             print("[WARNING] CSV contained malformed quote formatting. Some bad rows may have been skipped.")
                         except Exception as e4:
                             fallback_errors.append(str(e4))
@@ -96,6 +136,8 @@ def load_file(file_path: str) -> pd.DataFrame:
                             )
         except Exception as e:
             raise ValueError(f"Error reading CSV file: {str(e)}")
+
+        df = _drop_report_artifact_rows(df)
     elif file_extension in ['.xlsx', '.xls']:
         try:
             df = pd.read_excel(file_path)
@@ -162,6 +204,43 @@ def map_columns(
             if actual_col in df.columns:
                 column_mapping[canonical_col] = actual_col
 
+    def _clean_numeric_text(series: pd.Series) -> pd.Series:
+        return (
+            series.astype(str)
+            .str.replace(r'[$,]', '', regex=True)
+            .str.replace('%', '', regex=False)
+            .str.replace(' ', '', regex=False)
+            .str.strip()
+            .replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
+        )
+
+    def _numeric_series(series: pd.Series) -> pd.Series:
+        return pd.to_numeric(_clean_numeric_text(series), errors='coerce')
+
+    def _currency_column_stats(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
+        stats: dict[str, dict[str, float]] = {}
+        for col in frame.columns:
+            sample = frame[col].astype(str)
+            dollar_hits = int(sample.str.contains(r'\$', regex=True, na=False).sum())
+            numeric = _numeric_series(frame[col])
+            numeric_hits = int(numeric.notna().sum())
+            positive = numeric[numeric > 0]
+            median_value = float(positive.median()) if len(positive) else 0.0
+            stats[col] = {
+                'dollar_hits': float(dollar_hits),
+                'numeric_hits': float(numeric_hits),
+                'median_value': median_value,
+            }
+        return stats
+
+    def _combine_numeric_candidates(frame: pd.DataFrame, candidates: list[str]) -> Optional[pd.Series]:
+        if not candidates:
+            return None
+        combined = _numeric_series(frame[candidates[0]])
+        for candidate in candidates[1:]:
+            combined = combined.combine_first(_numeric_series(frame[candidate]))
+        return combined
+
     def _find_currency_like_column(frame: pd.DataFrame) -> Optional[str]:
         best_col = None
         best_score = (-1, -1)  # (dollar_hits, numeric_hits)
@@ -180,6 +259,57 @@ def map_columns(
                 best_score = score
         return best_col if best_score[0] > 0 else None
 
+    currency_stats = _currency_column_stats(df)
+
+    # Repair malformed PMS exports where total revenue and ADR are split across
+    # multiple currency-like columns after page breaks/header shifts.
+    blocked_columns = {
+        column_mapping.get('stay_date'),
+        column_mapping.get('rooms_sold'),
+        column_mapping.get('rooms_available'),
+        column_mapping.get('occupancy_percent'),
+    }
+    blocked_columns = {c for c in blocked_columns if c is not None}
+
+    revenue_candidates = [
+        col
+        for col, stats in currency_stats.items()
+        if col not in blocked_columns
+        and stats['dollar_hits'] > 0
+        and (
+            stats['median_value'] >= 300.0
+            or 'revenue' in str(col).strip().lower()
+        )
+    ]
+    revenue_candidates = sorted(
+        revenue_candidates,
+        key=lambda col: (
+            currency_stats[col]['numeric_hits'],
+            currency_stats[col]['median_value'],
+        ),
+        reverse=True,
+    )
+
+    if 'room_revenue' in column_mapping:
+        revenue_col = column_mapping['room_revenue']
+        revenue_numeric = _numeric_series(df[revenue_col]) if revenue_col in df.columns else pd.Series(dtype='float64')
+        revenue_non_null = int(revenue_numeric.notna().sum())
+        revenue_median = float(revenue_numeric[revenue_numeric > 0].median()) if (revenue_numeric > 0).any() else 0.0
+        revenue_fill_ratio = revenue_non_null / max(len(df), 1)
+
+        needs_revenue_repair = revenue_fill_ratio < 0.85 or (0.0 < revenue_median < 300.0)
+        if needs_revenue_repair:
+            derived_revenue = _combine_numeric_candidates(df, revenue_candidates)
+            if derived_revenue is not None:
+                derived_non_null = int(derived_revenue.notna().sum())
+                if derived_non_null > revenue_non_null:
+                    df['__derived_room_revenue'] = derived_revenue
+                    column_mapping['room_revenue'] = '__derived_room_revenue'
+                    print(
+                        f"[WARNING] Revenue mapping '{revenue_col}' looked incomplete/mis-scaled. "
+                        f"Using merged total-revenue columns: {', '.join(revenue_candidates)}"
+                    )
+
     if 'room_revenue' in column_mapping:
         revenue_col = column_mapping['room_revenue']
         revenue_null_ratio = df[revenue_col].isna().mean()
@@ -191,6 +321,48 @@ def map_columns(
                     f"[WARNING] Revenue values were not found in '{revenue_col}'. "
                     f"Using '{fallback_col}' for room_revenue instead."
                 )
+
+    adr_candidates = [
+        col
+        for col, stats in currency_stats.items()
+        if col not in blocked_columns
+        and col != column_mapping.get('room_revenue')
+        and stats['dollar_hits'] > 0
+        and (
+            'adr' in str(col).strip().lower()
+            or (20.0 <= stats['median_value'] <= 500.0)
+        )
+    ]
+    adr_candidates = sorted(
+        adr_candidates,
+        key=lambda col: (
+            currency_stats[col]['numeric_hits'],
+            'adr' in str(col).strip().lower(),
+        ),
+        reverse=True,
+    )
+
+    if 'adr' in column_mapping and column_mapping['adr'] in df.columns:
+        adr_col = column_mapping['adr']
+        adr_numeric = _numeric_series(df[adr_col])
+        adr_non_null = int(adr_numeric.notna().sum())
+        adr_fill_ratio = adr_non_null / max(len(df), 1)
+        if adr_fill_ratio < 0.85:
+            derived_adr = _combine_numeric_candidates(df, adr_candidates)
+            if derived_adr is not None:
+                derived_non_null = int(derived_adr.notna().sum())
+                if derived_non_null > adr_non_null:
+                    df['__derived_adr'] = derived_adr
+                    column_mapping['adr'] = '__derived_adr'
+                    print(
+                        f"[WARNING] ADR mapping '{adr_col}' looked incomplete. "
+                        f"Using merged ADR-like columns: {', '.join(adr_candidates)}"
+                    )
+    elif 'adr' not in column_mapping:
+        derived_adr = _combine_numeric_candidates(df, adr_candidates)
+        if derived_adr is not None and int(derived_adr.notna().sum()) > 0:
+            df['__derived_adr'] = derived_adr
+            column_mapping['adr'] = '__derived_adr'
 
     if 'room_revenue' in column_mapping and 'occupancy_percent' in column_mapping:
         if column_mapping['room_revenue'] == column_mapping['occupancy_percent']:

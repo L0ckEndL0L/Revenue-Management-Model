@@ -649,6 +649,10 @@ def run_pipeline(
     )
 
     recommendations_path = output_dir / "rate_recommendations.csv"
+    # Add recommended_rate column (alias for new_policy_rate) for chart compatibility
+    if "new_policy_rate" in recommendations_df.columns:
+        recommendations_df = recommendations_df.copy()
+        recommendations_df["recommended_rate"] = recommendations_df["new_policy_rate"]
     recommendations_df.to_csv(recommendations_path, index=False)
 
     top_raise_df, top_rescue_df, top_monitor_df, priority_full_df = build_priority_lists(

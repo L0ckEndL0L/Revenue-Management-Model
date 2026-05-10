@@ -24,6 +24,7 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
 
 # IDE
 .vscode/
@@ -38,6 +39,7 @@ Thumbs.db
 
 # Project specific
 outputs/
+datasets/
 *.csv
 *.xlsx
 *.xls
