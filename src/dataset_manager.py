@@ -1,6 +1,8 @@
 """Dataset management for saving and loading PMS reports."""
 
 import json
+import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -12,6 +14,13 @@ DATASETS_DIR = Path("datasets")
 METADATA_FILE = DATASETS_DIR / "datasets_metadata.json"
 
 
+def _sanitize_dataset_name(name: str) -> str:
+    """Normalize a dataset name so it is safe to use as a folder path."""
+    cleaned = re.sub(r"[\\/:*?\"<>|]+", "_", name.strip())
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip(" .")
+
+
 def _ensure_datasets_dir() -> None:
     """Create datasets directory if it doesn't exist."""
     DATASETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -21,7 +30,7 @@ def _load_metadata() -> Dict[str, dict]:
     """Load dataset metadata from JSON file."""
     _ensure_datasets_dir()
     if METADATA_FILE.exists():
-        with open(METADATA_FILE, "r") as f:
+        with open(METADATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -29,7 +38,7 @@ def _load_metadata() -> Dict[str, dict]:
 def _save_metadata(metadata: Dict[str, dict]) -> None:
     """Save dataset metadata to JSON file."""
     _ensure_datasets_dir()
-    with open(METADATA_FILE, "w") as f:
+    with open(METADATA_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, default=str)
 
 
@@ -63,7 +72,7 @@ def save_dataset(
     """
     try:
         # Sanitize dataset name
-        name = name.strip()
+        name = _sanitize_dataset_name(name)
         if not name:
             return False
         
@@ -110,7 +119,7 @@ def save_dataset(
             "historical_mapping": historical_mapping or {},
             "future_mapping": future_mapping or {},
         }
-        with open(dataset_dir / "mappings.json", "w") as f:
+        with open(dataset_dir / "mappings.json", "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
         
         # Update metadata
@@ -164,7 +173,7 @@ def load_dataset(name: str) -> tuple[
         future_mapping = {}
         mappings_file = dataset_dir / "mappings.json"
         if mappings_file.exists():
-            with open(mappings_file, "r") as f:
+            with open(mappings_file, "r", encoding="utf-8") as f:
                 mappings = json.load(f)
                 historical_mapping = mappings.get("historical_mapping", {})
                 future_mapping = mappings.get("future_mapping", {})
@@ -186,7 +195,7 @@ def list_datasets() -> List[str]:
     """List all saved dataset names."""
     _ensure_datasets_dir()
     metadata = _load_metadata()
-    return list(metadata.keys())
+    return sorted(metadata.keys())
 
 
 def get_dataset_info(name: str) -> Optional[Dict]:
@@ -210,7 +219,6 @@ def delete_dataset(name: str) -> bool:
         
         # Delete dataset directory
         if dataset_dir.exists():
-            import shutil
             shutil.rmtree(dataset_dir)
         
         # Remove from metadata
@@ -229,10 +237,12 @@ def delete_dataset(name: str) -> bool:
 def rename_dataset(old_name: str, new_name: str) -> bool:
     """Rename a saved dataset."""
     try:
+        old_name = _sanitize_dataset_name(old_name)
+        new_name = _sanitize_dataset_name(new_name)
         old_dir = DATASETS_DIR / old_name
         new_dir = DATASETS_DIR / new_name
         
-        if not old_dir.exists():
+        if not old_dir.exists() or not new_name or new_dir.exists():
             return False
         
         # Rename directory

@@ -56,25 +56,19 @@ Column names may vary by PMS export. The system attempts to map common aliases a
 The repository includes example input files in the data folder. You may also upload your own CSV or XLSX files through the Streamlit app.
 
 ## Data Folder Consistency
-The README below reflects the files currently present in data and data/historical.
+Tracked demo files in this repository:
 
 data/
-- budget_daily_sample.csv: daily budget-style sample input
-- budget_monthly_sample.csv: monthly budget-style sample input
-- events_sample.csv: optional event-calendar input for demand adjustments
+- sample_data.csv: baseline historical sample for quick pipeline testing
 - future_on_books_sample.csv: future on-the-books sample input
-- March 2025.csv: PMS-style historical sample file
-- occupancy (1).csv: alternate occupancy sample export
-- occupancy.csv: occupancy sample export
-- Q2 2025.csv: PMS-style historical sample file
-- Q2 2026.csv: PMS-style future-period sample file
-- sample_data.csv: general sample dataset for quick testing
-- historical/: supporting historical comparison files
+- events_sample.csv: optional event-calendar sample input
+- budget_daily_sample.csv: daily budget sample
+- budget_monthly_sample.csv: monthly budget sample
 
 data/historical/
-- March 2025.csv
-- occupancy_2024.csv
-- Q2 2025.csv
+- occupancy_2024.csv: historical comparison sample used for YoY and pace workflows
+
+Additional local CSV exports may exist in your working directory for experimentation. Those local files are excluded from version control by design.
 
 ## How to Run
 1. Clone the repository:
@@ -126,6 +120,14 @@ Optional CLI arguments include:
 - --budget
 - --manual_rooms_available
 - --elasticity
+
+## Quality Checks
+Run basic compile and test checks:
+
+```bash
+python -m compileall src app.py main.py
+python -m pytest
+```
 
 ## Project Outputs
 The system produces outputs in the outputs directory, including:

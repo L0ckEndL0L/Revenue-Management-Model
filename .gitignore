@@ -1,12 +1,15 @@
-# Python
+# Python caches and build artifacts
 __pycache__/
-*.py[cod]
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -20,32 +23,58 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
+.venv/
 venv/
 ENV/
 env/
-.venv/
 
-# IDE
+# Test and coverage caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor settings
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Project specific
+# Generated outputs and local-only data
+output/
 outputs/
+reports/
+local_outputs/
+local_data/
+private_data/
 datasets/
-*.csv
-*.xlsx
-*.xls
-!data/sample_data.csv
+cache/
+temp/
+*.tmp
 
-# Jupyter
+# Data policy: keep only safe demo samples tracked by default
+data/*.csv
+data/*.xlsx
+data/*.xls
+data/historical/*.csv
+!data/sample_data.csv
+!data/future_on_books_sample.csv
+!data/events_sample.csv
+!data/budget_daily_sample.csv
+!data/budget_monthly_sample.csv
+!data/historical/occupancy_2024.csv
+
+# Notebook artifacts
 .ipynb_checkpoints/
 *.ipynb
 

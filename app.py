@@ -142,18 +142,25 @@ def _build_yoy_outputs(output_paths: Dict[str, str], workspace_root: Path) -> tu
 def _mapping_ui(raw_df: pd.DataFrame, required: list[str], key_prefix: str) -> Dict[str, str]:
     mapping = auto_map_columns(raw_df)
     missing = [c for c in required if c not in mapping]
-    selected: Dict[str, str] = {}
 
     if missing:
         st.warning(f"Missing required fields for {key_prefix}: {', '.join(missing)}")
         for field in missing:
-            selected[field] = st.selectbox(
+            mapping[field] = st.selectbox(
                 f"Map {key_prefix} field '{field}'",
                 options=list(raw_df.columns),
                 key=f"{key_prefix}_{field}",
             )
 
-    return selected
+    return mapping
+
+
+def _merge_saved_mapping_with_auto(raw_df: pd.DataFrame, saved_mapping: Dict[str, str] | None) -> Dict[str, str]:
+    merged = dict(saved_mapping or {})
+    auto_mapping = auto_map_columns(raw_df)
+    for key, value in auto_mapping.items():
+        merged.setdefault(key, value)
+    return merged
 
 
 def _show_chart(chart_path: Path, caption: str) -> None:
@@ -344,12 +351,15 @@ with st.sidebar:
     )
     manual_rooms_available = None
     if use_manual_rooms_available:
+        manual_rooms_default = st.session_state.get("manual_rooms_available")
+        if manual_rooms_default is None:
+            manual_rooms_default = 100
         manual_rooms_available = int(
             st.number_input(
-                "Manual rooms available", 
-                min_value=0, 
-                value=st.session_state.get("manual_rooms_available", 100), 
-                step=1
+                "Manual rooms available",
+                min_value=0,
+                value=int(manual_rooms_default),
+                step=1,
             )
         )
     
@@ -379,20 +389,15 @@ if "historical_df" in st.session_state and "future_df" in st.session_state:
     hist_preview = st.session_state.historical_df
     fut_preview = st.session_state.future_df
     
-    # Load saved mappings and fill in any missing columns with auto-mapping
-    historical_mapping = st.session_state.get("historical_mapping", {})
-    auto_hist_mapping = auto_map_columns(hist_preview)
-    # Merge: saved mappings take precedence, auto-mapping fills gaps
-    for key, value in auto_hist_mapping.items():
-        if key not in historical_mapping:
-            historical_mapping[key] = value
-    
-    future_mapping = st.session_state.get("future_mapping", {})
-    auto_fut_mapping = auto_map_columns(fut_preview)
-    # Merge: saved mappings take precedence, auto-mapping fills gaps
-    for key, value in auto_fut_mapping.items():
-        if key not in future_mapping:
-            future_mapping[key] = value
+    # Fill missing mapping fields from auto-detection while preserving saved choices.
+    historical_mapping = _merge_saved_mapping_with_auto(
+        hist_preview,
+        st.session_state.get("historical_mapping", {}),
+    )
+    future_mapping = _merge_saved_mapping_with_auto(
+        fut_preview,
+        st.session_state.get("future_mapping", {}),
+    )
     
     # Update session state with completed mappings
     st.session_state.historical_mapping = historical_mapping
@@ -440,7 +445,6 @@ if hist_preview is not None:
     if not use_manual_rooms_available:
         historical_required.insert(1, "rooms_available")
     historical_mapping = _mapping_ui(hist_preview, historical_required, "historical")
-    st.session_state.historical_mapping = historical_mapping
     with st.expander("Historical preview", expanded=False):
         st.dataframe(hist_preview.head(40), use_container_width=True)
 
@@ -460,6 +464,7 @@ if hist_preview is not None:
             historical_mapping["current_rate"] = hist_current_rate_choice
         if hist_adr_choice != "(auto)":
             historical_mapping["adr"] = hist_adr_choice
+    st.session_state.historical_mapping = historical_mapping
 
 if fut_preview is not None:
     st.caption(f"Future columns: {', '.join([str(c) for c in fut_preview.columns])}")
@@ -467,7 +472,6 @@ if fut_preview is not None:
     if not use_manual_rooms_available:
         future_required.insert(1, "rooms_available")
     future_mapping = _mapping_ui(fut_preview, future_required, "future")
-    st.session_state.future_mapping = future_mapping
     with st.expander("Future preview", expanded=False):
         st.dataframe(fut_preview.head(40), use_container_width=True)
 
@@ -487,6 +491,7 @@ if fut_preview is not None:
             future_mapping["current_rate"] = fut_current_rate_choice
         if fut_adr_choice != "(auto)":
             future_mapping["adr"] = fut_adr_choice
+    st.session_state.future_mapping = future_mapping
 
 run_clicked = st.button("Run Pricing Simulation", type="primary")
 
@@ -499,6 +504,7 @@ if run_clicked:
         try:
             workspace_root = Path(__file__).parent
             uploads_dir = workspace_root / "outputs" / "_uploads"
+            uploads_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             # Handle file uploads (save them) or loaded datasets (use existing paths)

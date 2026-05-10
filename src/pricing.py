@@ -349,7 +349,7 @@ def simulate_elasticity_pricing(
     candidate_pct_steps: tuple[float, ...] = (-0.10, -0.05, 0.0, 0.05, 0.10, 0.15),
     budget_gap: float = 0.0,
     required_adr_remaining: float = 0.0,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Simulate candidate rates and choose revenue-maximizing recommendation per date.
 
@@ -489,8 +489,43 @@ def simulate_elasticity_pricing(
             }
         )
 
-    reco_df = pd.DataFrame(rows).sort_values("stay_date").reset_index(drop=True)
-    sim_df = pd.DataFrame(simulation_rows).sort_values(["stay_date", "candidate_rate"]).reset_index(drop=True)
+    reco_columns = [
+        "stay_date",
+        "current_rate",
+        "recommended_rate",
+        "expected_rooms_sold_at_recommended",
+        "expected_revenue_at_recommended",
+        "uplift_vs_current",
+        "pace_signal",
+        "event_signal",
+        "budget_signal",
+        "constraint_applied",
+        "confidence",
+        "explanation",
+        "forecast_occ",
+        "on_books",
+        "rooms_available",
+    ]
+    sim_columns = [
+        "stay_date",
+        "candidate_rate",
+        "expected_rooms_sold",
+        "expected_revenue",
+        "constraints",
+    ]
+
+    reco_df = pd.DataFrame(rows)
+    if len(reco_df) == 0:
+        reco_df = pd.DataFrame(columns=reco_columns)
+    else:
+        reco_df = reco_df.sort_values("stay_date").reset_index(drop=True)
+
+    sim_df = pd.DataFrame(simulation_rows)
+    if len(sim_df) == 0:
+        sim_df = pd.DataFrame(columns=sim_columns)
+    else:
+        sim_df = sim_df.sort_values(["stay_date", "candidate_rate"]).reset_index(drop=True)
+
     return reco_df, sim_df
 
 

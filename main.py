@@ -67,6 +67,10 @@ def _prepare_future_dataset(
     if len(future_df) == 0:
         return future_df
 
+    if "stay_date" in future_df.columns:
+        future_df["stay_date"] = pd.to_datetime(future_df["stay_date"], errors="coerce")
+        future_df = future_df.dropna(subset=["stay_date"]).reset_index(drop=True)
+
     if "room_revenue" not in future_df.columns:
         future_df["room_revenue"] = pd.NA
 
@@ -325,8 +329,16 @@ def run_pipeline(
     pace_df = calculate_pace_analysis(combined_for_pace, stly_df)
     pace_df = apply_event_impacts(pace_df, events_df)
 
+    merge_forecast_df = forecast_df[
+        ["stay_date", "forecast_rooms_sold", "forecast_occ", "base_demand", "on_books"]
+    ].copy()
+    merge_forecast_df["stay_date"] = pd.to_datetime(merge_forecast_df["stay_date"], errors="coerce")
+
+    future_df = future_df.copy()
+    future_df["stay_date"] = pd.to_datetime(future_df["stay_date"], errors="coerce")
+
     future_context = future_df.merge(
-        forecast_df[["stay_date", "forecast_rooms_sold", "forecast_occ", "base_demand", "on_books"]],
+        merge_forecast_df,
         on="stay_date",
         how="left",
     )
@@ -649,8 +661,8 @@ def run_pipeline(
     )
 
     recommendations_path = output_dir / "rate_recommendations.csv"
-    # Add recommended_rate column (alias for new_policy_rate) for chart compatibility
-    if "new_policy_rate" in recommendations_df.columns:
+    # Ensure recommended_rate exists for charts and downstream exports.
+    if "recommended_rate" not in recommendations_df.columns and "new_policy_rate" in recommendations_df.columns:
         recommendations_df = recommendations_df.copy()
         recommendations_df["recommended_rate"] = recommendations_df["new_policy_rate"]
     recommendations_df.to_csv(recommendations_path, index=False)
