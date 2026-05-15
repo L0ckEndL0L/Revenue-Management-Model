@@ -10,10 +10,11 @@ from typing import Dict
 
 def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate daily hotel metrics: Occupancy, ADR, and RevPAR.
+    Calculate daily hotel metrics: Occupancy, Occupancy %, ADR, and RevPAR.
     
     Formulas:
     - Occupancy (OCC) = rooms_sold / rooms_available
+    - Occupancy % = Occupancy * 100
     - ADR (Average Daily Rate) = room_revenue / rooms_sold
     - RevPAR (Revenue Per Available Room) = room_revenue / rooms_available
     

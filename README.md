@@ -20,7 +20,7 @@ This prototype provides an end-to-end workflow that:
 - CSV and Excel upload support
 - PMS-style data cleaning for inconsistent exports
 - Automated and assisted column/schema mapping
-- Occupancy, ADR, RevPAR, and revenue calculations
+- Occupancy, Occupancy %, ADR, RevPAR, and revenue calculations
 - Year-over-year comparison support
 - Forecasting and backtesting workflows
 - Budget-aware decision support
