@@ -38,6 +38,9 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
         0.0
     )
     
+    # Calculate Occupancy Percentage (occupancy * 100)
+    df_metrics['occupancy_pct'] = df_metrics['occupancy'] * 100.0
+    
     # Calculate ADR (room_revenue / rooms_sold)
     # Handle division by zero: if rooms_sold = 0, set ADR to 0
     df_metrics['adr'] = np.where(
@@ -57,7 +60,7 @@ def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Sort by stay_date
     df_metrics = df_metrics.sort_values('stay_date').reset_index(drop=True)
     
-    print("[OK] Calculated daily metrics: Occupancy, ADR, RevPAR")
+    print("[OK] Calculated daily metrics: Occupancy, Occupancy%, ADR, RevPAR")
     print("="*60 + "\n")
     
     return df_metrics
@@ -90,6 +93,9 @@ def aggregate_metrics(df: pd.DataFrame, freq: str = 'D') -> pd.DataFrame:
         df_agg['rooms_sold'] / df_agg['rooms_available'],
         0.0
     )
+    
+    # Calculate Occupancy Percentage for aggregated data
+    df_agg['occupancy_pct'] = df_agg['occupancy'] * 100.0
     
     df_agg['adr'] = np.where(
         df_agg['rooms_sold'] > 0,
@@ -198,7 +204,7 @@ def export_metrics(df: pd.DataFrame, output_path: str) -> None:
     # Select columns to export
     columns_to_export = [
         'stay_date', 'rooms_available', 'rooms_sold', 'room_revenue',
-        'occupancy', 'adr', 'revpar'
+        'occupancy', 'occupancy_pct', 'adr', 'revpar'
     ]
     
     # Add optional columns if present
@@ -216,6 +222,7 @@ def export_metrics(df: pd.DataFrame, output_path: str) -> None:
     
     # Round numeric columns
     df_export['occupancy'] = df_export['occupancy'].round(4)
+    df_export['occupancy_pct'] = df_export['occupancy_pct'].round(2)
     df_export['adr'] = df_export['adr'].round(2)
     df_export['revpar'] = df_export['revpar'].round(2)
     df_export['room_revenue'] = df_export['room_revenue'].round(2)

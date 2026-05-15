@@ -48,6 +48,9 @@ htmlcov/
 
 # OS files
 .DS_Store
+
+# Milestone readiness documentation (internal use only)
+WEEK4_MILESTONE_READINESS.md
 Thumbs.db
 
 # Generated outputs and local-only data
@@ -80,3 +83,36 @@ data/historical/*.csv
 
 # Logs
 *.log
+
+# Streamlit cache and config
+.streamlit/
+streamlit_config.yaml
+
+# Python profiling and type checking
+.dmypy.json
+dmypy.json
+.pyre/
+*.prof
+
+# Pickle and cached model files
+*.pkl
+*.pickle
+*.joblib
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS specific
+.AppleDouble
+.LSOverride
+._*
+
+# Windows specific
+.lnk
+
+# Additional temporary files
+*.bak
+*.orig
+.cache/
