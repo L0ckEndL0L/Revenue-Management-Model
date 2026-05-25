@@ -257,3 +257,31 @@ def save_validation_report(result: ValidationResult, output_path: str) -> None:
         f.write(report_text)
     
     print(f"[OK] Validation report saved to: {output_path}")
+
+
+def validate_required_fields_for_yoy(
+    df: pd.DataFrame | None,
+    required_fields: List[str],
+    dataset_label: str,
+) -> Dict[str, object]:
+    """Check field coverage used by YoY normalization and KPI variance logic."""
+    if df is None:
+        return {
+            "dataset": dataset_label,
+            "available": False,
+            "present_fields": [],
+            "missing_fields": list(required_fields),
+            "is_complete": False,
+        }
+
+    columns = set(df.columns)
+    present = [field for field in required_fields if field in columns]
+    missing = [field for field in required_fields if field not in columns]
+
+    return {
+        "dataset": dataset_label,
+        "available": True,
+        "present_fields": present,
+        "missing_fields": missing,
+        "is_complete": len(missing) == 0,
+    }

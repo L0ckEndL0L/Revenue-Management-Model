@@ -28,9 +28,8 @@ from src.dataset_manager import (
     load_dataset,
     save_dataset,
 )
-from src.pace import load_historical_data
 from src.schema import auto_map_columns
-from src.yoy import build_yoy_comparison, summarize_yoy
+from src.yoy import summarize_yoy
 
 
 def _is_running_in_streamlit() -> bool:
@@ -117,26 +116,15 @@ def _safe_read_csv(path_str: str) -> pd.DataFrame | None:
     return pd.read_csv(path)
 
 
-def _build_yoy_outputs(output_paths: Dict[str, str], workspace_root: Path) -> tuple[pd.DataFrame, dict]:
-    daily_metrics_df = _safe_read_csv(output_paths.get("daily_metrics", ""))
-    if daily_metrics_df is None or len(daily_metrics_df) == 0:
-        return pd.DataFrame(), {}
+def _build_yoy_outputs(
+    output_paths: Dict[str, str],
+    pipeline_yoy_summary: Dict | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    existing_yoy = _safe_read_csv(output_paths.get("yoy_comparison", ""))
+    if existing_yoy is None or len(existing_yoy) == 0:
+        return pd.DataFrame(), dict(pipeline_yoy_summary or {})
 
-    historical_dir = workspace_root / "data" / "historical"
-    historical_df = load_historical_data(historical_dir)
-    if historical_df is None or len(historical_df) == 0:
-        return pd.DataFrame(), {}
-
-    yoy_df = build_yoy_comparison(daily_metrics_df, historical_df)
-    if len(yoy_df) == 0:
-        return yoy_df, {}
-
-    yoy_summary = summarize_yoy(yoy_df)
-    yoy_path = Path(output_paths["output_dir"]) / "yoy_comparison.csv"
-    yoy_df.to_csv(yoy_path, index=False)
-    output_paths["yoy_comparison"] = str(yoy_path)
-
-    return yoy_df, yoy_summary
+    return existing_yoy, dict(pipeline_yoy_summary or summarize_yoy(existing_yoy))
 
 
 def _mapping_ui(raw_df: pd.DataFrame, required: list[str], key_prefix: str) -> Dict[str, str]:
@@ -586,7 +574,10 @@ if run_clicked:
             c6.metric("Projected uplift", f"${summary.get('projected_uplift_vs_baseline', 0.0):,.0f}")
 
             # YoY panel
-            yoy_df, yoy_summary = _build_yoy_outputs(output_paths, workspace_root)
+            yoy_df, yoy_summary = _build_yoy_outputs(
+                output_paths,
+                summary.get("yoy_summary", {}),
+            )
             if len(yoy_df) > 0:
                 st.subheader("Year-over-Year (YoY)")
                 y1, y2, y3 = st.columns(3)
@@ -604,6 +595,12 @@ if run_clicked:
                     "Revenue Change",
                     f"{yoy_summary.get('revenue_change_pct', 0.0):+.1f}%",
                     f"${yoy_summary.get('total_current_revenue', 0.0):,.0f} vs ${yoy_summary.get('total_stly_revenue', 0.0):,.0f}",
+                )
+                st.caption(
+                    "YoY row status: "
+                    f"matched={yoy_summary.get('matched_rows', 0)}, "
+                    f"missing prior-year={yoy_summary.get('missing_rows', 0)}, "
+                    f"incomplete prior-year={yoy_summary.get('incomplete_rows', 0)}"
                 )
             else:
                 st.info("YoY data not available for this run. Add comparable STLY files under data/historical to enable YoY.")

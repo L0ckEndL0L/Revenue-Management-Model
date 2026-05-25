@@ -1,251 +1,413 @@
-"""
-yoy.py
-Year-over-year comparison utilities.
-"""
+"""Year-over-year comparison utilities."""
 
 from __future__ import annotations
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
-def build_yoy_comparison(current_df: pd.DataFrame, historical_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build year-over-year comparison table with side-by-side current vs. historical metrics.
-    
-    Args:
-        current_df: Current year daily metrics with stay_date, occupancy, adr, rooms_available, rooms_sold, room_revenue
-        historical_df: Historical year daily metrics - can be minimal (just stay_date, stly_occupancy) or full structure
-    
-    Returns:
-        DataFrame with columns:
-          calendar_date, current_occ, stly_occ, occ_variance_pct, 
-          current_adr, stly_adr, adr_variance_pct,
-          current_revenue, stly_revenue, revenue_variance_pct
-    """
-    if current_df.empty or historical_df.empty:
-        return pd.DataFrame()
-    
-    # Ensure stay_date is datetime
-    current_df = current_df.copy()
-    historical_df = historical_df.copy()
-    current_df["stay_date"] = pd.to_datetime(current_df["stay_date"], errors="coerce")
-    historical_df["stay_date"] = pd.to_datetime(historical_df["stay_date"], errors="coerce")
-    
-    # Create calendar key (month-day)
-    current_df["calendar_date"] = current_df["stay_date"].dt.strftime("%m-%d")
-    
-    # Determine occupancy column name (could be "occupancy" or "occupancy_percent")
-    occ_col = "occupancy" if "occupancy" in current_df.columns else "occupancy_percent"
-    
-    # Aggregate current to daily if it has occupancy data
-    if occ_col in current_df.columns:
-        agg_dict = {occ_col: "mean"}
-        if "adr" in current_df.columns:
-            agg_dict["adr"] = "mean"
-        if "rooms_available" in current_df.columns:
-            agg_dict["rooms_available"] = "sum"
-        if "rooms_sold" in current_df.columns:
-            agg_dict["rooms_sold"] = "sum"
-        if "room_revenue" in current_df.columns:
-            agg_dict["room_revenue"] = "sum"
-        
-        current_daily = current_df.groupby("calendar_date", as_index=False).agg(agg_dict)
-        # Rename occupancy column if needed
-        if occ_col != "occupancy":
-            current_daily = current_daily.rename(columns={occ_col: "occupancy"})
-    else:
-        return pd.DataFrame()
-    
-    # Handle historical data - could be minimal (just stay_date, stly_occupancy, [stly_adr], [stly_revenue]) or full
-    historical_df["calendar_date"] = historical_df["stay_date"].dt.strftime("%m-%d")
-    
-    # Check if this is minimal historical format (stly_occupancy present, no raw occupancy column)
-    is_minimal_historical = "stly_occupancy" in historical_df.columns and "occupancy" not in historical_df.columns
-    
-    if is_minimal_historical:
-        # Minimal historical - just occupancy (and possibly ADR/revenue)
-        cols_to_keep = ["calendar_date", "stly_occupancy"]
-        if "stly_adr" in historical_df.columns:
-            cols_to_keep.append("stly_adr")
-        if "stly_revenue" in historical_df.columns:
-            cols_to_keep.append("stly_revenue")
-        historical_daily = historical_df[cols_to_keep].drop_duplicates()
-    else:
-        # Full historical - aggregate like current
-        hist_agg_dict = {}
-        if "occupancy" in historical_df.columns:
-            hist_agg_dict["occupancy"] = "mean"
-        elif "stly_occupancy" in historical_df.columns:
-            hist_agg_dict["stly_occupancy"] = "first"
-        if "adr" in historical_df.columns:
-            hist_agg_dict["adr"] = "mean"
-        if "stly_adr" in historical_df.columns:
-            hist_agg_dict["stly_adr"] = "first"
-        if "rooms_available" in historical_df.columns:
-            hist_agg_dict["rooms_available"] = "sum"
-        if "rooms_sold" in historical_df.columns:
-            hist_agg_dict["rooms_sold"] = "sum"
-        if "room_revenue" in historical_df.columns:
-            hist_agg_dict["room_revenue"] = "sum"
-        if "stly_revenue" in historical_df.columns:
-            hist_agg_dict["stly_revenue"] = "first"
-        
-        historical_daily = historical_df.groupby("calendar_date", as_index=False).agg(hist_agg_dict)
-        
-        # Rename columns for consistency
-        rename_map = {}
-        if "occupancy" in historical_daily.columns:
-            rename_map["occupancy"] = "stly_occupancy"
-        if "adr" in historical_daily.columns:
-            rename_map["adr"] = "stly_adr"
-        if "room_revenue" in historical_daily.columns:
-            rename_map["room_revenue"] = "stly_revenue"
-        historical_daily = historical_daily.rename(columns=rename_map)
-    
-    # Merge on calendar date
-    comparison = current_daily.merge(
-        historical_daily,
-        on="calendar_date",
-        how="outer"
-    )
-    
-    # Calculate variances
-    comparison["occupancy_variance_pct"] = (
-        (comparison["occupancy"] - comparison.get("stly_occupancy", np.nan)) * 100
-    )
-    
-    # ADR variance (if available)
-    if "adr" in comparison.columns and "stly_adr" in comparison.columns:
-        comparison["adr_variance_pct"] = (
-            ((comparison["adr"] - comparison["stly_adr"]) / comparison["stly_adr"] * 100)
-            .where(comparison["stly_adr"] > 0, 0)
+YOY_REQUIRED_FIELDS = ["stay_date", "rooms_available", "rooms_sold", "room_revenue"]
+
+
+def _safe_numeric(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    return pd.to_numeric(df[col], errors="coerce")
+
+
+def _coerce_occupancy_decimal(values: pd.Series) -> pd.Series:
+    out = pd.to_numeric(values, errors="coerce")
+    if out.notna().any() and float(out.max()) > 1.5:
+        out = out / 100.0
+    return out
+
+
+def _safe_pct_variance(current: pd.Series, prior: pd.Series) -> pd.Series:
+    current_num = pd.to_numeric(current, errors="coerce")
+    prior_num = pd.to_numeric(prior, errors="coerce")
+    valid_mask = current_num.notna() & prior_num.notna() & (prior_num != 0)
+    out = pd.Series(np.nan, index=current.index, dtype=float)
+    out.loc[valid_mask] = ((current_num.loc[valid_mask] - prior_num.loc[valid_mask]) / prior_num.loc[valid_mask]) * 100.0
+    return out
+
+
+def _aggregate_current_daily(df: pd.DataFrame) -> pd.DataFrame:
+    current = df.copy()
+    current["stay_date"] = pd.to_datetime(current.get("stay_date"), errors="coerce")
+    current = current.dropna(subset=["stay_date"]).copy()
+
+    if len(current) == 0:
+        return pd.DataFrame(columns=["stay_date", "calendar_date"])
+
+    current["rooms_available"] = _safe_numeric(current, "rooms_available")
+    current["rooms_sold"] = _safe_numeric(current, "rooms_sold")
+    current["room_revenue"] = _safe_numeric(current, "room_revenue")
+
+    grouped = (
+        current.groupby("stay_date", as_index=False)
+        .agg(
+            rooms_available=("rooms_available", "sum"),
+            rooms_sold=("rooms_sold", "sum"),
+            room_revenue=("room_revenue", "sum"),
         )
-    
-    # Revenue variance (if available)
-    if "room_revenue" in comparison.columns and "stly_revenue" in comparison.columns:
-        comparison["revenue_variance_pct"] = (
-            ((comparison["room_revenue"] - comparison["stly_revenue"]) / comparison["stly_revenue"] * 100)
-            .where(comparison["stly_revenue"] > 0, 0)
+        .sort_values("stay_date")
+        .reset_index(drop=True)
+    )
+
+    grouped["current_occupancy"] = np.where(
+        grouped["rooms_available"] > 0,
+        grouped["rooms_sold"] / grouped["rooms_available"],
+        np.nan,
+    )
+    grouped["current_occupancy_pct"] = grouped["current_occupancy"] * 100.0
+    grouped["current_adr"] = np.where(
+        grouped["rooms_sold"] > 0,
+        grouped["room_revenue"] / grouped["rooms_sold"],
+        np.nan,
+    )
+    grouped["current_revpar"] = np.where(
+        grouped["rooms_available"] > 0,
+        grouped["room_revenue"] / grouped["rooms_available"],
+        np.nan,
+    )
+
+    grouped = grouped.rename(
+        columns={
+            "rooms_available": "current_rooms_available",
+            "rooms_sold": "current_rooms_sold",
+            "room_revenue": "current_room_revenue",
+        }
+    )
+    grouped["calendar_date"] = grouped["stay_date"].dt.strftime("%m-%d")
+    return grouped
+
+
+def _normalize_prior_columns(prior_df: pd.DataFrame) -> pd.DataFrame:
+    prior = prior_df.copy()
+    prior["stay_date"] = pd.to_datetime(prior.get("stay_date"), errors="coerce")
+    prior = prior.dropna(subset=["stay_date"]).copy()
+
+    if len(prior) == 0:
+        return pd.DataFrame(columns=["stay_date", "calendar_date"])
+
+    rooms_available = _safe_numeric(prior, "rooms_available")
+    rooms_sold = _safe_numeric(prior, "rooms_sold")
+    room_revenue = _safe_numeric(prior, "room_revenue")
+
+    if "stly_rooms_sold" in prior.columns:
+        stly_rooms = _safe_numeric(prior, "stly_rooms_sold")
+        rooms_sold = rooms_sold.combine_first(stly_rooms)
+
+    if "stly_revenue" in prior.columns:
+        stly_revenue = _safe_numeric(prior, "stly_revenue")
+        room_revenue = room_revenue.combine_first(stly_revenue)
+
+    occupancy_decimal = pd.Series(np.nan, index=prior.index, dtype=float)
+    if "occupancy" in prior.columns:
+        occupancy_decimal = _coerce_occupancy_decimal(prior["occupancy"])
+    if "occupancy_percent" in prior.columns:
+        occupancy_decimal = occupancy_decimal.combine_first(_coerce_occupancy_decimal(prior["occupancy_percent"]))
+    if "stly_occupancy" in prior.columns:
+        occupancy_decimal = occupancy_decimal.combine_first(_coerce_occupancy_decimal(prior["stly_occupancy"]))
+
+    adr = _safe_numeric(prior, "adr")
+    if "stly_adr" in prior.columns:
+        adr = adr.combine_first(_safe_numeric(prior, "stly_adr"))
+
+    if rooms_available.isna().all() and occupancy_decimal.notna().any() and rooms_sold.notna().any():
+        rooms_available = np.where(occupancy_decimal > 0, rooms_sold / occupancy_decimal, np.nan)
+        rooms_available = pd.Series(rooms_available, index=prior.index, dtype=float)
+
+    prior_norm = pd.DataFrame(
+        {
+            "stay_date": prior["stay_date"],
+            "prior_year_rooms_available": rooms_available,
+            "prior_year_rooms_sold": rooms_sold,
+            "prior_year_room_revenue": room_revenue,
+            "prior_year_occupancy": occupancy_decimal,
+            "prior_year_adr": adr,
+        }
+    )
+
+    grouped = (
+        prior_norm.groupby("stay_date", as_index=False)
+        .agg(
+            prior_year_rooms_available=("prior_year_rooms_available", lambda s: s.sum(min_count=1)),
+            prior_year_rooms_sold=("prior_year_rooms_sold", lambda s: s.sum(min_count=1)),
+            prior_year_room_revenue=("prior_year_room_revenue", lambda s: s.sum(min_count=1)),
+            prior_year_occupancy=("prior_year_occupancy", "mean"),
+            prior_year_adr=("prior_year_adr", "mean"),
         )
-    
-    # Format output columns - only include what we have in BOTH current and historical
-    output_cols = ["calendar_date"]
-    rename_map = {}
-    
-    if "occupancy" in comparison.columns and "stly_occupancy" in comparison.columns:
-        # Convert decimal occupancy to percentage for display (0.75 -> 75.0)
-        if comparison["occupancy"].dtype in ['float64', 'float32']:
-            max_occ = comparison["occupancy"].max()
-            if max_occ < 1.5:  # Likely decimal format, convert to percentage
-                comparison["occupancy"] = comparison["occupancy"] * 100
-                comparison["stly_occupancy"] = comparison["stly_occupancy"] * 100
-        
-        output_cols.extend(["occupancy", "stly_occupancy", "occupancy_variance_pct"])
-        rename_map.update({
-            "occupancy": "Current OCC %",
-            "stly_occupancy": "STLY OCC %",
-            "occupancy_variance_pct": "OCC Var %"
-        })
-    
-    # Only include ADR if we have both current and historical versions
-    if "adr" in comparison.columns and "stly_adr" in comparison.columns:
-        if "adr_variance_pct" in comparison.columns:
-            output_cols.extend(["adr", "stly_adr", "adr_variance_pct"])
-            rename_map.update({
-                "adr": "Current ADR",
-                "stly_adr": "STLY ADR",
-                "adr_variance_pct": "ADR Var %"
-            })
-    
-    # Only include Revenue if we have both current and historical versions
-    if "room_revenue" in comparison.columns and "stly_revenue" in comparison.columns:
-        if "revenue_variance_pct" in comparison.columns:
-            output_cols.extend(["room_revenue", "stly_revenue", "revenue_variance_pct"])
-            rename_map.update({
-                "room_revenue": "Current Revenue",
-                "stly_revenue": "STLY Revenue",
-                "revenue_variance_pct": "Revenue Var %"
-            })
-    
-    # Filter output_cols to only include columns that actually exist
-    output_cols = [col for col in output_cols if col in comparison.columns]
-    
-    if not output_cols:
+        .sort_values("stay_date")
+        .reset_index(drop=True)
+    )
+
+    derived_occ = np.where(
+        grouped["prior_year_rooms_available"] > 0,
+        grouped["prior_year_rooms_sold"] / grouped["prior_year_rooms_available"],
+        np.nan,
+    )
+    grouped["prior_year_occupancy"] = pd.Series(derived_occ, index=grouped.index).combine_first(grouped["prior_year_occupancy"])
+    grouped["prior_year_occupancy_pct"] = grouped["prior_year_occupancy"] * 100.0
+
+    derived_adr = np.where(
+        grouped["prior_year_rooms_sold"] > 0,
+        grouped["prior_year_room_revenue"] / grouped["prior_year_rooms_sold"],
+        np.nan,
+    )
+    grouped["prior_year_adr"] = pd.Series(derived_adr, index=grouped.index).combine_first(grouped["prior_year_adr"])
+
+    grouped["prior_year_revpar"] = np.where(
+        grouped["prior_year_rooms_available"] > 0,
+        grouped["prior_year_room_revenue"] / grouped["prior_year_rooms_available"],
+        np.nan,
+    )
+    grouped["calendar_date"] = grouped["stay_date"].dt.strftime("%m-%d")
+    return grouped
+
+
+def build_yoy_comparison(current_df: pd.DataFrame, historical_df: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Build a row-level YoY comparison table.
+
+    Aligns current rows to prior year using exact prior-year date first, then falls
+    back to calendar-date (MM-DD) matching. Computes absolute and percentage
+    variances for occupancy, ADR, RevPAR, rooms sold, and revenue.
+    """
+    if current_df is None or len(current_df) == 0:
         return pd.DataFrame()
-    
-    result = comparison[output_cols].copy()
-    result = result.rename(columns=rename_map)
-    
-    return result.sort_values("calendar_date").reset_index(drop=True)
+
+    current_daily = _aggregate_current_daily(current_df)
+    if len(current_daily) == 0:
+        return pd.DataFrame()
+
+    if historical_df is None:
+        historical_df = pd.DataFrame()
+    prior_daily = _normalize_prior_columns(historical_df)
+
+    result = current_daily.copy()
+    result["prior_year_target_date"] = result["stay_date"] - pd.DateOffset(years=1)
+
+    if len(prior_daily) > 0:
+        exact_prior = prior_daily.copy()
+        exact_prior["prior_year_target_date"] = exact_prior["stay_date"]
+        exact_prior = exact_prior.rename(
+            columns={
+                "stay_date": "prior_year_stay_date_exact",
+                "prior_year_rooms_available": "prior_year_rooms_available_exact",
+                "prior_year_rooms_sold": "prior_year_rooms_sold_exact",
+                "prior_year_room_revenue": "prior_year_room_revenue_exact",
+                "prior_year_occupancy": "prior_year_occupancy_exact",
+                "prior_year_occupancy_pct": "prior_year_occupancy_pct_exact",
+                "prior_year_adr": "prior_year_adr_exact",
+                "prior_year_revpar": "prior_year_revpar_exact",
+            }
+        )
+        exact_cols = [
+            "prior_year_target_date",
+            "prior_year_stay_date_exact",
+            "prior_year_rooms_available_exact",
+            "prior_year_rooms_sold_exact",
+            "prior_year_room_revenue_exact",
+            "prior_year_occupancy_exact",
+            "prior_year_occupancy_pct_exact",
+            "prior_year_adr_exact",
+            "prior_year_revpar_exact",
+        ]
+        exact_prior = exact_prior[exact_cols]
+        result = result.merge(exact_prior, on="prior_year_target_date", how="left")
+
+        calendar_prior = prior_daily.sort_values("stay_date").drop_duplicates(subset=["calendar_date"], keep="last")
+        calendar_prior = calendar_prior.rename(
+            columns={
+                "stay_date": "prior_year_stay_date_calendar",
+                "prior_year_rooms_available": "prior_year_rooms_available_calendar",
+                "prior_year_rooms_sold": "prior_year_rooms_sold_calendar",
+                "prior_year_room_revenue": "prior_year_room_revenue_calendar",
+                "prior_year_occupancy": "prior_year_occupancy_calendar",
+                "prior_year_occupancy_pct": "prior_year_occupancy_pct_calendar",
+                "prior_year_adr": "prior_year_adr_calendar",
+                "prior_year_revpar": "prior_year_revpar_calendar",
+            }
+        )
+        result = result.merge(calendar_prior, on="calendar_date", how="left")
+    else:
+        result["prior_year_stay_date_exact"] = pd.NaT
+        result["prior_year_rooms_available_exact"] = np.nan
+        result["prior_year_rooms_sold_exact"] = np.nan
+        result["prior_year_room_revenue_exact"] = np.nan
+        result["prior_year_occupancy_exact"] = np.nan
+        result["prior_year_occupancy_pct_exact"] = np.nan
+        result["prior_year_adr_exact"] = np.nan
+        result["prior_year_revpar_exact"] = np.nan
+        result["prior_year_stay_date_calendar"] = pd.NaT
+        result["prior_year_rooms_available_calendar"] = np.nan
+        result["prior_year_rooms_sold_calendar"] = np.nan
+        result["prior_year_room_revenue_calendar"] = np.nan
+        result["prior_year_occupancy_calendar"] = np.nan
+        result["prior_year_occupancy_pct_calendar"] = np.nan
+        result["prior_year_adr_calendar"] = np.nan
+        result["prior_year_revpar_calendar"] = np.nan
+
+    exact_match = result["prior_year_stay_date_exact"].notna()
+    calendar_match = result["prior_year_stay_date_calendar"].notna()
+
+    result["prior_year_stay_date"] = result["prior_year_stay_date_exact"].combine_first(result["prior_year_stay_date_calendar"])
+    result["prior_year_rooms_available"] = result["prior_year_rooms_available_exact"].combine_first(result["prior_year_rooms_available_calendar"])
+    result["prior_year_rooms_sold"] = result["prior_year_rooms_sold_exact"].combine_first(result["prior_year_rooms_sold_calendar"])
+    result["prior_year_room_revenue"] = result["prior_year_room_revenue_exact"].combine_first(result["prior_year_room_revenue_calendar"])
+    result["prior_year_occupancy"] = result["prior_year_occupancy_exact"].combine_first(result["prior_year_occupancy_calendar"])
+    result["prior_year_occupancy_pct"] = result["prior_year_occupancy_pct_exact"].combine_first(result["prior_year_occupancy_pct_calendar"])
+    result["prior_year_adr"] = result["prior_year_adr_exact"].combine_first(result["prior_year_adr_calendar"])
+    result["prior_year_revpar"] = result["prior_year_revpar_exact"].combine_first(result["prior_year_revpar_calendar"])
+
+    result["yoy_alignment_method"] = np.where(
+        exact_match,
+        "exact_prior_date",
+        np.where(calendar_match, "calendar_date_fallback", "no_prior_match"),
+    )
+
+    result["current_required_fields_present"] = (
+        result[["stay_date", "current_rooms_available", "current_rooms_sold", "current_room_revenue"]].notna().all(axis=1)
+    )
+    result["prior_year_required_fields_present"] = (
+        result[["prior_year_stay_date", "prior_year_rooms_available", "prior_year_rooms_sold", "prior_year_room_revenue"]].notna().all(axis=1)
+    )
+
+    result["prior_year_data_available"] = result[
+        [
+            "prior_year_occupancy_pct",
+            "prior_year_adr",
+            "prior_year_revpar",
+            "prior_year_rooms_sold",
+            "prior_year_room_revenue",
+        ]
+    ].notna().any(axis=1)
+
+    result["yoy_status"] = np.where(
+        ~result["prior_year_data_available"],
+        "PRIOR_YEAR_UNAVAILABLE",
+        np.where(result["prior_year_required_fields_present"], "OK", "PRIOR_YEAR_INCOMPLETE"),
+    )
+
+    result["occupancy_variance"] = result["current_occupancy_pct"] - result["prior_year_occupancy_pct"]
+    result["occupancy_variance_pct"] = _safe_pct_variance(result["current_occupancy_pct"], result["prior_year_occupancy_pct"])
+
+    result["adr_variance"] = result["current_adr"] - result["prior_year_adr"]
+    result["adr_variance_pct"] = _safe_pct_variance(result["current_adr"], result["prior_year_adr"])
+
+    result["revpar_variance"] = result["current_revpar"] - result["prior_year_revpar"]
+    result["revpar_variance_pct"] = _safe_pct_variance(result["current_revpar"], result["prior_year_revpar"])
+
+    result["rooms_sold_variance"] = result["current_rooms_sold"] - result["prior_year_rooms_sold"]
+    result["rooms_sold_variance_pct"] = _safe_pct_variance(result["current_rooms_sold"], result["prior_year_rooms_sold"])
+
+    result["revenue_variance"] = result["current_room_revenue"] - result["prior_year_room_revenue"]
+    result["revenue_variance_pct"] = _safe_pct_variance(result["current_room_revenue"], result["prior_year_room_revenue"])
+
+    # Legacy aliases used by the current UI panel and prior reports.
+    result["Current OCC %"] = result["current_occupancy_pct"]
+    result["STLY OCC %"] = result["prior_year_occupancy_pct"]
+    result["OCC Var %"] = result["occupancy_variance"]
+    result["Current ADR"] = result["current_adr"]
+    result["STLY ADR"] = result["prior_year_adr"]
+    result["ADR Var %"] = result["adr_variance_pct"]
+    result["Current Revenue"] = result["current_room_revenue"]
+    result["STLY Revenue"] = result["prior_year_room_revenue"]
+    result["Revenue Var %"] = result["revenue_variance_pct"]
+
+    ordered_cols = [
+        "stay_date",
+        "prior_year_target_date",
+        "prior_year_stay_date",
+        "calendar_date",
+        "yoy_alignment_method",
+        "yoy_status",
+        "current_required_fields_present",
+        "prior_year_required_fields_present",
+        "prior_year_data_available",
+        "current_rooms_available",
+        "current_rooms_sold",
+        "current_room_revenue",
+        "current_occupancy",
+        "current_occupancy_pct",
+        "current_adr",
+        "current_revpar",
+        "prior_year_rooms_available",
+        "prior_year_rooms_sold",
+        "prior_year_room_revenue",
+        "prior_year_occupancy",
+        "prior_year_occupancy_pct",
+        "prior_year_adr",
+        "prior_year_revpar",
+        "occupancy_variance",
+        "occupancy_variance_pct",
+        "adr_variance",
+        "adr_variance_pct",
+        "revpar_variance",
+        "revpar_variance_pct",
+        "rooms_sold_variance",
+        "rooms_sold_variance_pct",
+        "revenue_variance",
+        "revenue_variance_pct",
+        "Current OCC %",
+        "STLY OCC %",
+        "OCC Var %",
+        "Current ADR",
+        "STLY ADR",
+        "ADR Var %",
+        "Current Revenue",
+        "STLY Revenue",
+        "Revenue Var %",
+    ]
+    ordered_cols = [c for c in ordered_cols if c in result.columns]
+    return result[ordered_cols].sort_values("stay_date").reset_index(drop=True)
 
 
 def summarize_yoy(yoy_df: pd.DataFrame) -> dict:
-    """Calculate summary statistics for year-over-year comparison."""
-    if yoy_df.empty:
+    """Calculate summary statistics for YoY comparison output."""
+    if yoy_df is None or len(yoy_df) == 0:
         return {}
-    
-    summary = {}
-    
-    # Occupancy - Already in decimal format (0.75 = 75%), convert to percentage for display
-    if "Current OCC %" in yoy_df.columns:
-        # Column already renamed, so values are in decimal. Multiply by 100 for percentage display
-        current_occ = yoy_df["Current OCC %"].mean()
-        # If still in decimal format (0.75), convert to percentage (75)
-        if current_occ < 1.5:  # Likely decimal format
-            current_occ = current_occ * 100
-        summary["avg_current_occupancy_pct"] = current_occ
-    
-    if "STLY OCC %" in yoy_df.columns:
-        stly_occ = yoy_df["STLY OCC %"].mean()
-        # If still in decimal format (0.75), convert to percentage (75)
-        if stly_occ < 1.5:  # Likely decimal format
-            stly_occ = stly_occ * 100
-        summary["avg_stly_occupancy_pct"] = stly_occ
-    
-    if "avg_current_occupancy_pct" in summary and "avg_stly_occupancy_pct" in summary:
-        # Use the OCC Var % column which already has individual variances calculated
-        if "OCC Var %" in yoy_df.columns:
-            # Filter out NaN values for accurate average
-            var_col = yoy_df["OCC Var %"].dropna()
-            summary["occupancy_change_pct"] = var_col.mean() if len(var_col) > 0 else 0
-        else:
-            summary["occupancy_change_pct"] = summary["avg_current_occupancy_pct"] - summary["avg_stly_occupancy_pct"]
-    
-    # ADR
-    if "Current ADR" in yoy_df.columns:
-        current_adr = yoy_df["Current ADR"].mean() if yoy_df["Current ADR"].dtype != 'object' else 0
-        summary["avg_current_adr"] = current_adr
-    else:
-        summary["avg_current_adr"] = 0
-        
-    if "STLY ADR" in yoy_df.columns:
-        stly_adr = yoy_df["STLY ADR"].mean() if yoy_df["STLY ADR"].dtype != 'object' else 0
-        summary["avg_stly_adr"] = stly_adr
-    else:
-        summary["avg_stly_adr"] = 0
-    
-    if summary.get("avg_stly_adr", 0) > 0:
-        summary["adr_change_pct"] = ((summary["avg_current_adr"] - summary["avg_stly_adr"]) / summary["avg_stly_adr"] * 100)
-    else:
-        summary["adr_change_pct"] = 0
-    
-    # Revenue
-    if "Current Revenue" in yoy_df.columns:
-        current_rev = yoy_df["Current Revenue"].sum() if yoy_df["Current Revenue"].dtype != 'object' else 0
-        summary["total_current_revenue"] = current_rev
-    else:
-        summary["total_current_revenue"] = 0
-        
-    if "STLY Revenue" in yoy_df.columns:
-        stly_rev = yoy_df["STLY Revenue"].sum() if yoy_df["STLY Revenue"].dtype != 'object' else 0
-        summary["total_stly_revenue"] = stly_rev
-    else:
-        summary["total_stly_revenue"] = 0
-    
-    if summary.get("total_stly_revenue", 0) > 0:
-        summary["revenue_change_pct"] = ((summary["total_current_revenue"] - summary["total_stly_revenue"]) / summary["total_stly_revenue"] * 100)
-    else:
-        summary["revenue_change_pct"] = 0
-    
+
+    current_occ_col = "current_occupancy_pct" if "current_occupancy_pct" in yoy_df.columns else "Current OCC %"
+    prior_occ_col = "prior_year_occupancy_pct" if "prior_year_occupancy_pct" in yoy_df.columns else "STLY OCC %"
+    current_adr_col = "current_adr" if "current_adr" in yoy_df.columns else "Current ADR"
+    prior_adr_col = "prior_year_adr" if "prior_year_adr" in yoy_df.columns else "STLY ADR"
+    current_rev_col = "current_room_revenue" if "current_room_revenue" in yoy_df.columns else "Current Revenue"
+    prior_rev_col = "prior_year_room_revenue" if "prior_year_room_revenue" in yoy_df.columns else "STLY Revenue"
+
+    current_occ = pd.to_numeric(yoy_df.get(current_occ_col, pd.Series(dtype=float)), errors="coerce")
+    prior_occ = pd.to_numeric(yoy_df.get(prior_occ_col, pd.Series(dtype=float)), errors="coerce")
+    current_adr = pd.to_numeric(yoy_df.get(current_adr_col, pd.Series(dtype=float)), errors="coerce")
+    prior_adr = pd.to_numeric(yoy_df.get(prior_adr_col, pd.Series(dtype=float)), errors="coerce")
+    current_rev = pd.to_numeric(yoy_df.get(current_rev_col, pd.Series(dtype=float)), errors="coerce")
+    prior_rev = pd.to_numeric(yoy_df.get(prior_rev_col, pd.Series(dtype=float)), errors="coerce")
+
+    summary = {
+        "avg_current_occupancy_pct": float(current_occ.dropna().mean()) if current_occ.notna().any() else 0.0,
+        "avg_stly_occupancy_pct": float(prior_occ.dropna().mean()) if prior_occ.notna().any() else 0.0,
+        "avg_current_adr": float(current_adr.dropna().mean()) if current_adr.notna().any() else 0.0,
+        "avg_stly_adr": float(prior_adr.dropna().mean()) if prior_adr.notna().any() else 0.0,
+        "total_current_revenue": float(current_rev.fillna(0.0).sum()),
+        "total_stly_revenue": float(prior_rev.fillna(0.0).sum()),
+        "matched_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "OK").sum()),
+        "missing_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_UNAVAILABLE").sum()),
+        "incomplete_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_INCOMPLETE").sum()),
+    }
+
+    summary["occupancy_change_pct"] = (
+        float(summary["avg_current_occupancy_pct"] - summary["avg_stly_occupancy_pct"])
+        if summary["avg_stly_occupancy_pct"] != 0.0
+        else 0.0
+    )
+    summary["adr_change_pct"] = (
+        float(((summary["avg_current_adr"] - summary["avg_stly_adr"]) / summary["avg_stly_adr"]) * 100.0)
+        if summary["avg_stly_adr"] != 0.0
+        else 0.0
+    )
+    summary["revenue_change_pct"] = (
+        float(((summary["total_current_revenue"] - summary["total_stly_revenue"]) / summary["total_stly_revenue"]) * 100.0)
+        if summary["total_stly_revenue"] != 0.0
+        else 0.0
+    )
     return summary

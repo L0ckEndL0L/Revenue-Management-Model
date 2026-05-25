@@ -38,7 +38,13 @@ from src.metrics import calculate_daily_metrics, export_metrics
 from src.pace import calculate_pace_analysis, load_historical_data
 from src.pricing import PricingConfig, build_priority_lists, generate_rate_recommendations, simulate_elasticity_pricing
 from src.utils import ensure_directory_exists, get_timestamp, print_error
-from src.validate import check_data_quality, save_validation_report, validate_data
+from src.validate import (
+    check_data_quality,
+    save_validation_report,
+    validate_data,
+    validate_required_fields_for_yoy,
+)
+from src.yoy import YOY_REQUIRED_FIELDS, build_yoy_comparison, summarize_yoy
 
 
 def _prepare_future_dataset(
@@ -325,6 +331,26 @@ def run_pipeline(
     # Pace/event context.
     historical_dir = Path(__file__).parent / "data" / "historical"
     stly_df = load_historical_data(str(historical_dir))
+
+    yoy_field_checks = {
+        "current": validate_required_fields_for_yoy(
+            historical_metrics,
+            YOY_REQUIRED_FIELDS,
+            dataset_label="current_year",
+        ),
+        "prior": validate_required_fields_for_yoy(
+            stly_df,
+            YOY_REQUIRED_FIELDS,
+            dataset_label="prior_year",
+        ),
+    }
+
+    # Week 5 YoY output: keep this independent from pace to preserve baseline flows.
+    yoy_df = build_yoy_comparison(historical_metrics, stly_df)
+    yoy_summary = summarize_yoy(yoy_df)
+    yoy_path = output_dir / "yoy_comparison.csv"
+    yoy_df.to_csv(yoy_path, index=False)
+
     combined_for_pace = pd.concat([historical_df, future_df], ignore_index=True) if len(future_df) else historical_df.copy()
     pace_df = calculate_pace_analysis(combined_for_pace, stly_df)
     pace_df = apply_event_impacts(pace_df, events_df)
@@ -726,6 +752,7 @@ def run_pipeline(
         "cleaned_data": str(cleaned_path),
         "daily_metrics": str(daily_metrics_path),
         "validation_report": str(validation_path),
+        "yoy_comparison": str(yoy_path),
         "forecast": str(forecast_path),
         "rate_recommendations": str(recommendations_path),
         "top_raise_opportunities": str(top_raise_path),
@@ -739,6 +766,8 @@ def run_pipeline(
     summary = {
         "budget_summary": budget_summary,
         "forecast_metrics": forecast_metrics,
+        "yoy_summary": yoy_summary,
+        "yoy_field_checks": yoy_field_checks,
         "projected_uplift_vs_baseline": projected_uplift,
         "heavy_need_days": int(len(top_raise_df)),
     }

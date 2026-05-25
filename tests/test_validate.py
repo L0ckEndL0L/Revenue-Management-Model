@@ -5,7 +5,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.validate import validate_data
+from src.validate import validate_data, validate_required_fields_for_yoy
 
 
 def test_validate_data_blocks_overbooking_when_disabled() -> None:
@@ -40,3 +40,23 @@ def test_validate_data_fills_missing_current_rate() -> None:
 
     assert len(cleaned) == 1
     assert cleaned.iloc[0]["current_rate"] == 120.0
+
+
+def test_validate_required_fields_for_yoy_reports_missing_fields() -> None:
+    df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2025-01-01"]),
+            "rooms_sold": [5],
+            "room_revenue": [500.0],
+        }
+    )
+
+    check = validate_required_fields_for_yoy(
+        df,
+        ["stay_date", "rooms_available", "rooms_sold", "room_revenue"],
+        dataset_label="current_year",
+    )
+
+    assert check["available"] is True
+    assert check["is_complete"] is False
+    assert check["missing_fields"] == ["rooms_available"]
