@@ -217,20 +217,53 @@ def build_yoy_comparison(current_df: pd.DataFrame, historical_df: pd.DataFrame |
         exact_prior = exact_prior[exact_cols]
         result = result.merge(exact_prior, on="prior_year_target_date", how="left")
 
-        calendar_prior = prior_daily.sort_values("stay_date").drop_duplicates(subset=["calendar_date"], keep="last")
-        calendar_prior = calendar_prior.rename(
-            columns={
-                "stay_date": "prior_year_stay_date_calendar",
-                "prior_year_rooms_available": "prior_year_rooms_available_calendar",
-                "prior_year_rooms_sold": "prior_year_rooms_sold_calendar",
-                "prior_year_room_revenue": "prior_year_room_revenue_calendar",
-                "prior_year_occupancy": "prior_year_occupancy_calendar",
-                "prior_year_occupancy_pct": "prior_year_occupancy_pct_calendar",
-                "prior_year_adr": "prior_year_adr_calendar",
-                "prior_year_revpar": "prior_year_revpar_calendar",
-            }
+        calendar_candidates = result[["stay_date", "calendar_date"]].merge(
+            prior_daily,
+            on="calendar_date",
+            how="left",
+            suffixes=("", "_candidate"),
         )
-        result = result.merge(calendar_prior, on="calendar_date", how="left")
+        calendar_candidates = calendar_candidates[
+            calendar_candidates["stay_date_candidate"].notna()
+            & (calendar_candidates["stay_date_candidate"] < calendar_candidates["stay_date"])
+        ].copy()
+
+        if len(calendar_candidates) > 0:
+            calendar_candidates = calendar_candidates.sort_values(["stay_date", "stay_date_candidate"])
+            calendar_candidates = calendar_candidates.drop_duplicates(subset=["stay_date"], keep="last")
+            calendar_candidates = calendar_candidates.rename(
+                columns={
+                    "stay_date_candidate": "prior_year_stay_date_calendar",
+                    "prior_year_rooms_available": "prior_year_rooms_available_calendar",
+                    "prior_year_rooms_sold": "prior_year_rooms_sold_calendar",
+                    "prior_year_room_revenue": "prior_year_room_revenue_calendar",
+                    "prior_year_occupancy": "prior_year_occupancy_calendar",
+                    "prior_year_occupancy_pct": "prior_year_occupancy_pct_calendar",
+                    "prior_year_adr": "prior_year_adr_calendar",
+                    "prior_year_revpar": "prior_year_revpar_calendar",
+                }
+            )
+            calendar_cols = [
+                "stay_date",
+                "prior_year_stay_date_calendar",
+                "prior_year_rooms_available_calendar",
+                "prior_year_rooms_sold_calendar",
+                "prior_year_room_revenue_calendar",
+                "prior_year_occupancy_calendar",
+                "prior_year_occupancy_pct_calendar",
+                "prior_year_adr_calendar",
+                "prior_year_revpar_calendar",
+            ]
+            result = result.merge(calendar_candidates[calendar_cols], on="stay_date", how="left")
+        else:
+            result["prior_year_stay_date_calendar"] = pd.NaT
+            result["prior_year_rooms_available_calendar"] = np.nan
+            result["prior_year_rooms_sold_calendar"] = np.nan
+            result["prior_year_room_revenue_calendar"] = np.nan
+            result["prior_year_occupancy_calendar"] = np.nan
+            result["prior_year_occupancy_pct_calendar"] = np.nan
+            result["prior_year_adr_calendar"] = np.nan
+            result["prior_year_revpar_calendar"] = np.nan
     else:
         result["prior_year_stay_date_exact"] = pd.NaT
         result["prior_year_rooms_available_exact"] = np.nan
@@ -383,31 +416,37 @@ def summarize_yoy(yoy_df: pd.DataFrame) -> dict:
     current_rev = pd.to_numeric(yoy_df.get(current_rev_col, pd.Series(dtype=float)), errors="coerce")
     prior_rev = pd.to_numeric(yoy_df.get(prior_rev_col, pd.Series(dtype=float)), errors="coerce")
 
+    matched_rows = int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "OK").sum())
+    missing_rows = int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_UNAVAILABLE").sum())
+    incomplete_rows = int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_INCOMPLETE").sum())
+    has_comparable_data = matched_rows > 0
+
     summary = {
         "avg_current_occupancy_pct": float(current_occ.dropna().mean()) if current_occ.notna().any() else 0.0,
-        "avg_stly_occupancy_pct": float(prior_occ.dropna().mean()) if prior_occ.notna().any() else 0.0,
+        "avg_stly_occupancy_pct": float(prior_occ.dropna().mean()) if has_comparable_data and prior_occ.notna().any() else np.nan,
         "avg_current_adr": float(current_adr.dropna().mean()) if current_adr.notna().any() else 0.0,
-        "avg_stly_adr": float(prior_adr.dropna().mean()) if prior_adr.notna().any() else 0.0,
+        "avg_stly_adr": float(prior_adr.dropna().mean()) if has_comparable_data and prior_adr.notna().any() else np.nan,
         "total_current_revenue": float(current_rev.fillna(0.0).sum()),
-        "total_stly_revenue": float(prior_rev.fillna(0.0).sum()),
-        "matched_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "OK").sum()),
-        "missing_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_UNAVAILABLE").sum()),
-        "incomplete_rows": int((yoy_df.get("yoy_status", pd.Series(dtype=str)) == "PRIOR_YEAR_INCOMPLETE").sum()),
+        "total_stly_revenue": float(prior_rev.fillna(0.0).sum()) if has_comparable_data and prior_rev.notna().any() else np.nan,
+        "matched_rows": matched_rows,
+        "missing_rows": missing_rows,
+        "incomplete_rows": incomplete_rows,
+        "has_comparable_data": has_comparable_data,
     }
 
     summary["occupancy_change_pct"] = (
         float(summary["avg_current_occupancy_pct"] - summary["avg_stly_occupancy_pct"])
-        if summary["avg_stly_occupancy_pct"] != 0.0
-        else 0.0
+        if pd.notna(summary["avg_stly_occupancy_pct"])
+        else np.nan
     )
     summary["adr_change_pct"] = (
         float(((summary["avg_current_adr"] - summary["avg_stly_adr"]) / summary["avg_stly_adr"]) * 100.0)
-        if summary["avg_stly_adr"] != 0.0
-        else 0.0
+        if pd.notna(summary["avg_stly_adr"]) and summary["avg_stly_adr"] != 0.0
+        else np.nan
     )
     summary["revenue_change_pct"] = (
         float(((summary["total_current_revenue"] - summary["total_stly_revenue"]) / summary["total_stly_revenue"]) * 100.0)
-        if summary["total_stly_revenue"] != 0.0
-        else 0.0
+        if pd.notna(summary["total_stly_revenue"]) and summary["total_stly_revenue"] != 0.0
+        else np.nan
     )
     return summary

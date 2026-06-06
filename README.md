@@ -25,6 +25,7 @@ This prototype provides an end-to-end workflow that:
 - Forecasting and backtesting workflows
 - Budget-aware decision support
 - Baseline vs enhanced recommendation comparison
+- Once-daily baseline pricing model for capstone comparison
 - Explainable pricing recommendations
 - Streamlit dashboard interface
 - CLI pipeline support
@@ -37,6 +38,24 @@ This prototype provides an end-to-end workflow that:
 5. Run forecasting and backtesting
 6. Compare baseline and enhanced pricing recommendations
 7. Generate explainable pricing output
+
+## Baseline Comparison Model (Capstone)
+The project includes a simple once-daily baseline pricing model used as the comparison arm for the capstone hypothesis.
+
+Purpose:
+- provide a transparent, replicable benchmark,
+- avoid advanced RMS-only signals, and
+- support measurable comparison against the proposed RMS recommendation engine.
+
+Model behavior:
+- uses standard daily PMS-style inputs (stay date, rooms available/sold, occupancy, ADR/RevPAR context, room revenue, day of week),
+- applies simple occupancy-threshold rules (high occupancy: modest increase, low occupancy: modest decrease, moderate occupancy: hold),
+- can reference prior historical ADR by day-of-week when available,
+- returns clear unavailable status for rows where occupancy/ADR cannot be derived safely.
+
+The baseline intentionally does not use intraday comp-set refreshes, event-driven pricing logic, or budget-aware optimization.
+
+This baseline enables later evaluation against the RMS model using metrics such as MAE, RMSE, MAPE, RevPAR impact, and related uplift comparisons.
 
 ## Data Requirements
 Minimum required fields are:
@@ -99,13 +118,7 @@ pip install -r requirements.txt
 4. Run the Streamlit application:
 
 ```bash
-python run_app.py
-```
-
-Alternative:
-
-```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 5. Run the CLI pipeline (supported):
@@ -135,6 +148,7 @@ The system produces outputs in the outputs directory, including:
 - KPI calculations
 - forecast results
 - backtesting and evaluation results
+- baseline once-daily pricing recommendations (`baseline_recommendations.csv`)
 - baseline vs enhanced recommendation comparison tables
 - pricing recommendation explanations and priority outputs
 - chart images and dashboard views when generated

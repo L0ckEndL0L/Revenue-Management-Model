@@ -29,6 +29,14 @@ from src.dataset_manager import (
     save_dataset,
 )
 from src.schema import auto_map_columns
+from src.tailored import (
+    ALLOWED_UPDATE_FREQUENCIES,
+    build_daily_median_rate_table,
+    default_tailored_settings,
+    update_daily_median_rates,
+    update_median_rate,
+    validate_tailored_settings,
+)
 from src.yoy import summarize_yoy
 
 
@@ -49,6 +57,119 @@ if __name__ == "__main__" and not _is_running_in_streamlit():
 
 
 st.set_page_config(page_title="Hotel RMS Pricing Simulation", layout="wide")
+
+
+TAILORED_PROPERTY_TYPES = [
+    "Full Service",
+    "Limited Service",
+    "Select Service",
+    "Luxury",
+    "Resort",
+    "Boutique",
+    "Extended Stay",
+    "Economy",
+]
+TAILORED_SEGMENT_OPTIONS = [
+    "Balanced",
+    "Revenue",
+    "Occupancy",
+    "Corporate",
+    "Group",
+    "Premium",
+    "Leisure",
+]
+
+
+def _tailored_state_key(name: str) -> str:
+    return f"tailored_{name}"
+
+
+def _tailored_pending_state_key() -> str:
+    return "_tailored_pending_session_update"
+
+
+def _initialize_tailored_session(settings: Dict | None = None) -> None:
+    defaults = default_tailored_settings()
+    merged = {**defaults, **(settings or {})}
+    for key, value in merged.items():
+        state_key = _tailored_state_key(key)
+        normalized_value = "" if key in {"median_rate", "global_median_rate_fallback"} and value in (None, "") else value
+        if settings is not None or state_key not in st.session_state:
+            st.session_state[state_key] = normalized_value
+
+
+def _current_tailored_settings() -> Dict[str, object]:
+    defaults = default_tailored_settings()
+    current: Dict[str, object] = {}
+    for key, default_value in defaults.items():
+        current[key] = st.session_state.get(_tailored_state_key(key), default_value)
+    return current
+
+
+def _format_optional_currency(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"${float(value):,.2f}"
+
+
+def _format_optional_timestamp(value: str | None) -> str:
+    if not value:
+        return "Not updated yet"
+    try:
+        return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return str(value)
+
+
+def _queue_tailored_session_update(settings: Dict[str, object]) -> None:
+    st.session_state[_tailored_pending_state_key()] = dict(settings)
+
+
+def _apply_pending_tailored_session_update() -> None:
+    pending = st.session_state.pop(_tailored_pending_state_key(), None)
+    if pending:
+        _initialize_tailored_session(pending)
+
+
+_apply_pending_tailored_session_update()
+_initialize_tailored_session()
+
+
+def _prepare_tailored_future_preview(raw_df: pd.DataFrame | None, mapping: Dict[str, str] | None) -> pd.DataFrame:
+    if raw_df is None or len(raw_df) == 0:
+        return pd.DataFrame(columns=["stay_date"])
+
+    mapping = mapping or {}
+    candidate_columns = [
+        "stay_date",
+        "rooms_available",
+        "rooms_sold",
+        "room_revenue",
+        "current_rate",
+        "adr",
+        "recommended_rate",
+        "occupancy",
+        "forecast_occ",
+        "pace_variance",
+        "event_pct",
+        "impact_level",
+    ]
+
+    rename_map: Dict[str, str] = {}
+    for canonical_name in candidate_columns:
+        mapped_name = mapping.get(canonical_name)
+        if mapped_name in raw_df.columns:
+            rename_map[mapped_name] = canonical_name
+        elif canonical_name in raw_df.columns:
+            rename_map[canonical_name] = canonical_name
+
+    preview = raw_df.rename(columns=rename_map).copy()
+    available_columns = [column for column in candidate_columns if column in preview.columns]
+    preview = preview[available_columns].copy() if available_columns else pd.DataFrame(columns=["stay_date"])
+    if "stay_date" in preview.columns:
+        preview["stay_date"] = pd.to_datetime(preview["stay_date"], errors="coerce")
+        preview = preview.dropna(subset=["stay_date"]).sort_values("stay_date").reset_index(drop=True)
+    return preview
 
 
 def _read_uploaded_table(uploaded_file) -> pd.DataFrame:
@@ -125,6 +246,21 @@ def _build_yoy_outputs(
         return pd.DataFrame(), dict(pipeline_yoy_summary or {})
 
     return existing_yoy, dict(pipeline_yoy_summary or summarize_yoy(existing_yoy))
+
+
+def _format_yoy_change(value: float | None, prefix: str = "", suffix: str = "%") -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{prefix}{value:+.1f}{suffix}"
+
+
+def _format_yoy_pair(current: float | None, prior: float | None, currency: bool = False, decimals: int = 1) -> str:
+    if current is None or pd.isna(current) or prior is None or pd.isna(prior):
+        return "No comparable prior-year data"
+
+    if currency:
+        return f"${current:,.{decimals}f} vs ${prior:,.{decimals}f}"
+    return f"{current:.{decimals}f}% vs {prior:.{decimals}f}%"
 
 
 def _mapping_ui(raw_df: pd.DataFrame, required: list[str], key_prefix: str) -> Dict[str, str]:
@@ -233,7 +369,7 @@ with st.sidebar:
             )
             
             if st.button("Load Dataset", key="load_dataset_btn"):
-                hist_df, fut_df, events_df, budget_df, hist_map, fut_map, use_manual_rooms, manual_rooms = load_dataset(selected_dataset)
+                hist_df, fut_df, events_df, budget_df, hist_map, fut_map, use_manual_rooms, manual_rooms, tailored_settings = load_dataset(selected_dataset)
                 if hist_df is not None and fut_df is not None:
                     st.session_state.loaded_dataset_name = selected_dataset
                     st.session_state.historical_df = hist_df
@@ -244,6 +380,7 @@ with st.sidebar:
                     st.session_state.future_mapping = fut_map
                     st.session_state.use_manual_rooms_available = use_manual_rooms
                     st.session_state.manual_rooms_available = manual_rooms
+                    _initialize_tailored_session(tailored_settings)
                     st.session_state.load_dataset_success = True
                 else:
                     st.error("Failed to load dataset")
@@ -268,21 +405,26 @@ with st.sidebar:
         
         if st.button("Save Dataset", key="save_dataset_btn"):
             if "historical_df" in st.session_state and "future_df" in st.session_state:
-                success = save_dataset(
-                    name=dataset_name,
-                    historical_df=st.session_state.historical_df,
-                    future_df=st.session_state.future_df,
-                    events_df=st.session_state.get("events_df"),
-                    budget_df=st.session_state.get("budget_df"),
-                    historical_mapping=st.session_state.get("historical_mapping"),
-                    future_mapping=st.session_state.get("future_mapping"),
-                    use_manual_rooms_available=st.session_state.get("use_manual_rooms_available", False),
-                    manual_rooms_available=st.session_state.get("manual_rooms_available"),
-                )
-                if success:
-                    st.success(f"✓ Saved dataset: {dataset_name}")
+                tailored_settings, tailored_errors = validate_tailored_settings(_current_tailored_settings())
+                if tailored_errors:
+                    st.error("Tailored Model settings: " + "; ".join(tailored_errors))
                 else:
-                    st.error("Failed to save dataset")
+                    success = save_dataset(
+                        name=dataset_name,
+                        historical_df=st.session_state.historical_df,
+                        future_df=st.session_state.future_df,
+                        events_df=st.session_state.get("events_df"),
+                        budget_df=st.session_state.get("budget_df"),
+                        historical_mapping=st.session_state.get("historical_mapping"),
+                        future_mapping=st.session_state.get("future_mapping"),
+                        use_manual_rooms_available=st.session_state.get("use_manual_rooms_available", False),
+                        manual_rooms_available=st.session_state.get("manual_rooms_available"),
+                        tailored_settings=tailored_settings,
+                    )
+                    if success:
+                        st.success(f"✓ Saved dataset: {dataset_name}")
+                    else:
+                        st.error("Failed to save dataset")
             else:
                 st.warning("Load or upload data first before saving")
     
@@ -324,6 +466,8 @@ with st.sidebar:
                         st.caption("✓ Has events data")
                     if info.get('has_budget'):
                         st.caption("✓ Has budget data")
+                    if info.get('has_tailored_settings'):
+                        st.caption("✓ Has tailored model settings")
         else:
             st.info("No datasets to manage yet")
     
@@ -365,6 +509,85 @@ with st.sidebar:
     use_interactive_charts = st.checkbox("Use interactive charts", value=True)
     output_base = st.text_input("Output folder", value="outputs")
 
+    st.divider()
+
+    st.header("Tailored Model")
+    current_property_type = str(st.session_state.get(_tailored_state_key("property_type"), TAILORED_PROPERTY_TYPES[0]))
+    property_options = TAILORED_PROPERTY_TYPES if current_property_type in TAILORED_PROPERTY_TYPES else [current_property_type, *TAILORED_PROPERTY_TYPES]
+    st.selectbox(
+        "Property type",
+        options=property_options,
+        index=property_options.index(current_property_type),
+        key=_tailored_state_key("property_type"),
+    )
+
+    current_segment_focus = str(st.session_state.get(_tailored_state_key("segment_focus"), TAILORED_SEGMENT_OPTIONS[0]))
+    segment_options = TAILORED_SEGMENT_OPTIONS if current_segment_focus in TAILORED_SEGMENT_OPTIONS else [current_segment_focus, *TAILORED_SEGMENT_OPTIONS]
+    st.selectbox(
+        "Segment focus",
+        options=segment_options,
+        index=segment_options.index(current_segment_focus),
+        key=_tailored_state_key("segment_focus"),
+    )
+
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        st.slider("Baseline occupancy sensitivity", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("baseline_occupancy_sensitivity"))
+        st.slider("ADR sensitivity", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("adr_sensitivity"))
+        st.slider("RevPAR priority", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("revpar_priority"))
+        st.slider("Rooms sold priority", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("rooms_sold_priority"))
+        st.slider("Revenue priority", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("revenue_priority"))
+    with tc2:
+        st.slider("Demand adjustment factor", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("demand_adjustment_factor"))
+        st.slider("Seasonality adjustment factor", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("seasonality_adjustment_factor"))
+        st.slider("Event or compression-night impact", min_value=0.0, max_value=2.0, step=0.1, key=_tailored_state_key("event_impact_factor"))
+        st.number_input("Minimum acceptable rate", min_value=0.0, step=1.0, key=_tailored_state_key("minimum_acceptable_rate"))
+        st.number_input("Maximum recommended rate", min_value=0.0, step=1.0, key=_tailored_state_key("maximum_recommended_rate"))
+
+    st.text_input(
+        "Global Median Rate Fallback",
+        key=_tailored_state_key("global_median_rate_fallback"),
+        placeholder="Used only when a date-level median is unavailable",
+    )
+    st.caption("This global value is only used when a forecast date does not have a manual or dataset-derived daily median.")
+
+    median_frequency_options = list(ALLOWED_UPDATE_FREQUENCIES.keys())
+    current_frequency = str(st.session_state.get(_tailored_state_key("median_rate_update_frequency"), "Manual only"))
+    st.selectbox(
+        "Median rate update frequency",
+        options=median_frequency_options,
+        index=median_frequency_options.index(current_frequency) if current_frequency in median_frequency_options else median_frequency_options.index("Manual only"),
+        key=_tailored_state_key("median_rate_update_frequency"),
+    )
+    st.caption(
+        "Last median rate update: "
+        + _format_optional_timestamp(st.session_state.get(_tailored_state_key("median_rate_last_updated")))
+    )
+
+    median_col1, median_col2 = st.columns(2)
+    with median_col1:
+        if st.button("Clear Global Fallback", key="tailored_clear_global_fallback", use_container_width=True):
+            refreshed = dict(_current_tailored_settings())
+            refreshed["global_median_rate_fallback"] = None
+            refreshed["median_rate"] = None
+            refreshed["median_rate_last_updated"] = None
+            _queue_tailored_session_update(refreshed)
+            st.rerun()
+    with median_col2:
+        if st.button("Update Global Fallback Timestamp", key="tailored_update_median_timestamp", use_container_width=True):
+            current_settings = _current_tailored_settings()
+            median_text = str(current_settings.get("global_median_rate_fallback", "")).strip()
+            if not median_text:
+                st.error("Enter a global median fallback before updating its timestamp.")
+            else:
+                validated_settings, tailored_errors = validate_tailored_settings(current_settings)
+                if tailored_errors:
+                    st.error("Tailored Model settings: " + "; ".join(tailored_errors))
+                else:
+                    refreshed = update_median_rate(validated_settings, float(validated_settings["global_median_rate_fallback"]))
+                    _queue_tailored_session_update(refreshed)
+                    st.rerun()
+
 st.subheader("Uploads")
 
 # Check if dataset was loaded from session state
@@ -394,9 +617,13 @@ if "historical_df" in st.session_state and "future_df" in st.session_state:
     if st.button("Clear Loaded Dataset", key="clear_dataset_btn"):
         for key in ["historical_df", "future_df", "events_df", "budget_df", "loaded_dataset_name", 
                     "historical_mapping", "future_mapping", "load_dataset_success",
-                    "use_manual_rooms_available", "manual_rooms_available"]:
+                    "use_manual_rooms_available", "manual_rooms_available", "tailored_daily_median_editor"]:
             if key in st.session_state:
                 del st.session_state[key]
+        for key in list(st.session_state.keys()):
+            if key.startswith("tailored_"):
+                del st.session_state[key]
+        _initialize_tailored_session()
         st.rerun()
 else:
     # Standard file upload
@@ -438,18 +665,11 @@ if hist_preview is not None:
 
     with st.expander("Optional historical pricing mappings", expanded=False):
         optional_choices = ["(auto)"] + list(hist_preview.columns)
-        hist_current_rate_choice = st.selectbox(
-            "Map historical current_rate (optional)",
-            options=optional_choices,
-            key="hist_opt_current_rate",
-        )
         hist_adr_choice = st.selectbox(
-            "Map historical ADR (optional)",
+            "Map historical ADR (optional if room revenue is already mapped)",
             options=optional_choices,
             key="hist_opt_adr",
         )
-        if hist_current_rate_choice != "(auto)":
-            historical_mapping["current_rate"] = hist_current_rate_choice
         if hist_adr_choice != "(auto)":
             historical_mapping["adr"] = hist_adr_choice
     st.session_state.historical_mapping = historical_mapping
@@ -465,31 +685,94 @@ if fut_preview is not None:
 
     with st.expander("Optional future pricing mappings", expanded=False):
         optional_choices = ["(auto)"] + list(fut_preview.columns)
+        fut_revenue_choice = st.selectbox(
+            "Map future room revenue / total revenue (recommended for YoY, ADR, and baseline comparison)",
+            options=optional_choices,
+            key="fut_opt_room_revenue",
+        )
         fut_current_rate_choice = st.selectbox(
-            "Map future current_rate (optional)",
+            "Map future current_rate / sell rate (optional for pricing engine)",
             options=optional_choices,
             key="fut_opt_current_rate",
         )
         fut_adr_choice = st.selectbox(
-            "Map future ADR (optional)",
+            "Map future ADR (optional if revenue is already mapped)",
             options=optional_choices,
             key="fut_opt_adr",
         )
+        if fut_revenue_choice != "(auto)":
+            future_mapping["room_revenue"] = fut_revenue_choice
         if fut_current_rate_choice != "(auto)":
             future_mapping["current_rate"] = fut_current_rate_choice
         if fut_adr_choice != "(auto)":
             future_mapping["adr"] = fut_adr_choice
     st.session_state.future_mapping = future_mapping
 
-run_clicked = st.button("Run Pricing Simulation", type="primary")
+tailored_future_preview = _prepare_tailored_future_preview(
+    fut_preview,
+    future_mapping if "future_mapping" in locals() else st.session_state.get("future_mapping", {}),
+)
+if len(tailored_future_preview) > 0:
+    st.subheader("Daily Median Rates")
+    st.caption("Edit manual daily medians by forecast date. Blank manual values are allowed and will fall back to the dataset-derived or global median.")
 
-if run_clicked:
+    daily_median_df = build_daily_median_rate_table(
+        tailored_future_preview,
+        _current_tailored_settings(),
+    )
+    daily_median_editor_df = daily_median_df.copy()
+    if "stay_date" in daily_median_editor_df.columns:
+        daily_median_editor_df["stay_date"] = pd.to_datetime(daily_median_editor_df["stay_date"], errors="coerce")
+
+    edited_daily_median_df = st.data_editor(
+        daily_median_editor_df,
+        use_container_width=True,
+        hide_index=True,
+        key="tailored_daily_median_editor",
+        disabled=[
+            "stay_date",
+            "suggested_dataset_median_rate",
+            "global_median_fallback",
+            "final_median_rate_used",
+            "median_rate_source",
+            "last_median_update_timestamp",
+        ],
+        column_config={
+            "stay_date": st.column_config.DateColumn("Forecast date", format="YYYY-MM-DD"),
+            "suggested_dataset_median_rate": st.column_config.NumberColumn("Suggested dataset median rate", format="$%.2f"),
+            "manual_daily_median_rate": st.column_config.NumberColumn("Manual median rate", min_value=0.01, step=1.0, format="$%.2f"),
+            "global_median_fallback": st.column_config.NumberColumn("Global median fallback", format="$%.2f"),
+            "final_median_rate_used": st.column_config.NumberColumn("Final median rate used", format="$%.2f"),
+            "median_rate_source": "Median-rate source",
+            "last_median_update_timestamp": "Last updated timestamp",
+        },
+    )
+
+    updated_tailored_settings = update_daily_median_rates(
+        _current_tailored_settings(),
+        edited_daily_median_df,
+    )
+    st.session_state[_tailored_state_key("daily_median_rates")] = updated_tailored_settings.get("daily_median_rates", [])
+
+action_col1, action_col2 = st.columns(2)
+with action_col1:
+    run_clicked = st.button("Run Pricing Simulation", type="primary", use_container_width=True)
+with action_col2:
+    refresh_tailored_clicked = st.button("Refresh Tailored Recommendation", use_container_width=True)
+st.caption("Tailored refresh reuses the data already loaded in session, so you can update the median rate without re-importing files.")
+
+if run_clicked or refresh_tailored_clicked:
     if hist_preview is None:
         st.error("Upload or load a historical PMS report first.")
     elif fut_preview is None:
         st.error("Upload or load a future on-books report first.")
     else:
         try:
+            tailored_settings, tailored_errors = validate_tailored_settings(_current_tailored_settings())
+            if tailored_errors:
+                st.error("Tailored Model settings: " + "; ".join(tailored_errors))
+                st.stop()
+
             workspace_root = Path(__file__).parent
             uploads_dir = workspace_root / "outputs" / "_uploads"
             uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -553,6 +836,7 @@ if run_clicked:
                         "elasticity": float(elasticity),
                         "default_current_rate": float(default_current_rate),
                         "manual_rooms_available": manual_rooms_available,
+                        "tailored_settings": tailored_settings,
                     },
                 )
                 status.update(label="Simulation complete", state="complete")
@@ -572,6 +856,31 @@ if run_clicked:
             c4.metric("Required ADR remaining", f"${budget_summary.get('required_adr_remaining', 0.0):,.2f}")
             c5.metric("Forecast MAE", f"{forecast_metrics.get('mae', float('nan')):.2f}")
             c6.metric("Projected uplift", f"${summary.get('projected_uplift_vs_baseline', 0.0):,.0f}")
+            st.caption(
+                "Baseline model rows: "
+                f"{summary.get('baseline_rows', 0)} "
+                f"(unavailable: {summary.get('baseline_unavailable_rows', 0)})"
+            )
+            if summary.get("using_uploaded_comparison", False):
+                st.caption("YoY and baseline comparison are using the two uploaded datasets as the prior-year/current-year pair.")
+
+            tailored_summary = summary.get("tailored_summary", {})
+            st.subheader("Tailored Model")
+            t1, t2, t3 = st.columns(3)
+            t1.metric("Avg final median used", _format_optional_currency(tailored_summary.get("avg_final_median_rate_used")))
+            t2.metric("Manual daily median dates", f"{int(tailored_summary.get('manual_daily_median_dates', 0))}")
+            t3.metric("Global fallback dates", f"{int(tailored_summary.get('global_fallback_median_dates', 0))}")
+            st.caption(
+                "Median update frequency: "
+                f"{tailored_summary.get('median_rate_update_frequency', 'Manual only')}"
+                + " | Last update: "
+                + _format_optional_timestamp(tailored_summary.get("median_rate_last_updated"))
+            )
+            st.caption(
+                "Daily median sources: "
+                f"dataset-derived={int(tailored_summary.get('dataset_derived_daily_median_dates', 0))}, "
+                f"missing={int(tailored_summary.get('missing_median_dates', 0))}"
+            )
 
             # YoY panel
             yoy_df, yoy_summary = _build_yoy_outputs(
@@ -583,18 +892,31 @@ if run_clicked:
                 y1, y2, y3 = st.columns(3)
                 y1.metric(
                     "Occupancy Change",
-                    f"{yoy_summary.get('occupancy_change_pct', 0.0):+.1f}%",
-                    f"{yoy_summary.get('avg_current_occupancy_pct', 0.0):.1f}% vs {yoy_summary.get('avg_stly_occupancy_pct', 0.0):.1f}%",
+                    _format_yoy_change(yoy_summary.get("occupancy_change_pct")),
+                    _format_yoy_pair(
+                        yoy_summary.get("avg_current_occupancy_pct"),
+                        yoy_summary.get("avg_stly_occupancy_pct"),
+                    ),
                 )
                 y2.metric(
                     "ADR Change",
-                    f"{yoy_summary.get('adr_change_pct', 0.0):+.1f}%",
-                    f"${yoy_summary.get('avg_current_adr', 0.0):,.2f} vs ${yoy_summary.get('avg_stly_adr', 0.0):,.2f}",
+                    _format_yoy_change(yoy_summary.get("adr_change_pct")),
+                    _format_yoy_pair(
+                        yoy_summary.get("avg_current_adr"),
+                        yoy_summary.get("avg_stly_adr"),
+                        currency=True,
+                        decimals=2,
+                    ),
                 )
                 y3.metric(
                     "Revenue Change",
-                    f"{yoy_summary.get('revenue_change_pct', 0.0):+.1f}%",
-                    f"${yoy_summary.get('total_current_revenue', 0.0):,.0f} vs ${yoy_summary.get('total_stly_revenue', 0.0):,.0f}",
+                    _format_yoy_change(yoy_summary.get("revenue_change_pct")),
+                    _format_yoy_pair(
+                        yoy_summary.get("total_current_revenue"),
+                        yoy_summary.get("total_stly_revenue"),
+                        currency=True,
+                        decimals=0,
+                    ),
                 )
                 st.caption(
                     "YoY row status: "
@@ -602,6 +924,8 @@ if run_clicked:
                     f"missing prior-year={yoy_summary.get('missing_rows', 0)}, "
                     f"incomplete prior-year={yoy_summary.get('incomplete_rows', 0)}"
                 )
+                if not yoy_summary.get("has_comparable_data", False):
+                    st.info("No comparable prior-year stay dates were found for this run, so YoY change values are shown as N/A.")
             else:
                 st.info("YoY data not available for this run. Add comparable STLY files under data/historical to enable YoY.")
 
@@ -609,6 +933,8 @@ if run_clicked:
             st.subheader("Outputs")
             tabs = st.tabs([
                 "Forecast",
+                "Baseline",
+                "Tailored Model",
                 "Rate Recommendations",
                 "Top Raise",
                 "Top Rescue",
@@ -621,21 +947,30 @@ if run_clicked:
                 df = _safe_read_csv(output_paths.get("forecast", ""))
                 st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[1]:
-                df = _safe_read_csv(output_paths.get("rate_recommendations", ""))
+                df = _safe_read_csv(output_paths.get("baseline_recommendations", ""))
                 st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[2]:
-                df = _safe_read_csv(output_paths.get("top_raise_opportunities", ""))
-                st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+                tailored_summary_df = _safe_read_csv(output_paths.get("tailored_model_summary", ""))
+                tailored_results_df = _safe_read_csv(output_paths.get("tailored_model_results", ""))
+                if tailored_summary_df is not None:
+                    st.dataframe(tailored_summary_df, use_container_width=True)
+                st.dataframe(tailored_results_df if tailored_results_df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[3]:
-                df = _safe_read_csv(output_paths.get("top_rescue_dates", ""))
+                df = _safe_read_csv(output_paths.get("rate_recommendations", ""))
                 st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[4]:
-                df = _safe_read_csv(output_paths.get("top_monitor_dates", ""))
+                df = _safe_read_csv(output_paths.get("top_raise_opportunities", ""))
                 st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[5]:
-                df = _safe_read_csv(output_paths.get("evaluation_metrics", ""))
+                df = _safe_read_csv(output_paths.get("top_rescue_dates", ""))
                 st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
             with tabs[6]:
+                df = _safe_read_csv(output_paths.get("top_monitor_dates", ""))
+                st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+            with tabs[7]:
+                df = _safe_read_csv(output_paths.get("evaluation_metrics", ""))
+                st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+            with tabs[8]:
                 st.dataframe(yoy_df if len(yoy_df) > 0 else pd.DataFrame(), use_container_width=True)
 
             # Charts
@@ -747,6 +1082,9 @@ if run_clicked:
             st.subheader("Downloads")
             for key in [
                 "forecast",
+                "baseline_recommendations",
+                "tailored_model_results",
+                "tailored_model_summary",
                 "rate_recommendations",
                 "top_raise_opportunities",
                 "top_rescue_dates",

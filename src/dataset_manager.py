@@ -52,6 +52,7 @@ def save_dataset(
     future_mapping: Optional[Dict[str, str]] = None,
     use_manual_rooms_available: bool = False,
     manual_rooms_available: Optional[int] = None,
+    tailored_settings: Optional[Dict] = None,
 ) -> bool:
     """
     Save a dataset with historical, future, and optional supplementary data.
@@ -87,6 +88,9 @@ def save_dataset(
             metadata[name]["has_budget"] = budget_df is not None and len(budget_df) > 0
             metadata[name]["use_manual_rooms_available"] = use_manual_rooms_available
             metadata[name]["manual_rooms_available"] = manual_rooms_available
+            metadata[name]["has_tailored_settings"] = bool(tailored_settings)
+            metadata[name]["median_rate_last_updated"] = (tailored_settings or {}).get("median_rate_last_updated")
+            metadata[name]["median_rate_update_frequency"] = (tailored_settings or {}).get("median_rate_update_frequency")
         else:
             # Create new dataset entry
             metadata[name] = {
@@ -98,6 +102,9 @@ def save_dataset(
                 "has_budget": budget_df is not None and len(budget_df) > 0,
                 "use_manual_rooms_available": use_manual_rooms_available,
                 "manual_rooms_available": manual_rooms_available,
+                "has_tailored_settings": bool(tailored_settings),
+                "median_rate_last_updated": (tailored_settings or {}).get("median_rate_last_updated"),
+                "median_rate_update_frequency": (tailored_settings or {}).get("median_rate_update_frequency"),
             }
         
         # Create dataset directory
@@ -118,6 +125,7 @@ def save_dataset(
         mappings = {
             "historical_mapping": historical_mapping or {},
             "future_mapping": future_mapping or {},
+            "tailored_settings": tailored_settings or {},
         }
         with open(dataset_dir / "mappings.json", "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
@@ -140,6 +148,7 @@ def load_dataset(name: str) -> tuple[
     Dict[str, str],
     bool,
     Optional[int],
+    Dict,
 ]:
     """
     Load a saved dataset.
@@ -171,12 +180,14 @@ def load_dataset(name: str) -> tuple[
         # Load mappings
         historical_mapping = {}
         future_mapping = {}
+        tailored_settings = {}
         mappings_file = dataset_dir / "mappings.json"
         if mappings_file.exists():
             with open(mappings_file, "r", encoding="utf-8") as f:
                 mappings = json.load(f)
                 historical_mapping = mappings.get("historical_mapping", {})
                 future_mapping = mappings.get("future_mapping", {})
+            tailored_settings = mappings.get("tailored_settings", {})
         
         # Load manual rooms available settings from metadata
         metadata = _load_metadata()
@@ -184,11 +195,11 @@ def load_dataset(name: str) -> tuple[
         use_manual_rooms_available = dataset_meta.get("use_manual_rooms_available", False)
         manual_rooms_available = dataset_meta.get("manual_rooms_available")
         
-        return historical_df, future_df, events_df, budget_df, historical_mapping, future_mapping, use_manual_rooms_available, manual_rooms_available
+        return historical_df, future_df, events_df, budget_df, historical_mapping, future_mapping, use_manual_rooms_available, manual_rooms_available, tailored_settings
     
     except Exception as e:
         print(f"Error loading dataset '{name}': {e}")
-        return None, None, None, None, {}, {}, False, None
+        return None, None, None, None, {}, {}, False, None, {}
 
 
 def list_datasets() -> List[str]:

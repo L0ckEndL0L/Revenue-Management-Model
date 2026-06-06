@@ -132,3 +132,33 @@ def test_summarize_yoy_counts_missing_rows() -> None:
     assert summary["matched_rows"] == 1
     assert summary["missing_rows"] == 1
     assert summary["incomplete_rows"] == 0
+
+
+def test_summarize_yoy_returns_nan_when_no_comparable_prior_data() -> None:
+    current_df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2025-03-01", "2025-03-02"]),
+            "rooms_available": [100, 100],
+            "rooms_sold": [80, 90],
+            "room_revenue": [9600.0, 11700.0],
+        }
+    )
+    prior_df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2024-02-01"]),
+            "rooms_available": [100],
+            "rooms_sold": [70],
+            "room_revenue": [7700.0],
+        }
+    )
+
+    yoy_df = build_yoy_comparison(current_df, prior_df)
+    summary = summarize_yoy(yoy_df)
+
+    assert summary["matched_rows"] == 0
+    assert summary["missing_rows"] == 2
+    assert summary["has_comparable_data"] is False
+    assert pd.isna(summary["avg_stly_adr"])
+    assert pd.isna(summary["total_stly_revenue"])
+    assert pd.isna(summary["adr_change_pct"])
+    assert pd.isna(summary["revenue_change_pct"])

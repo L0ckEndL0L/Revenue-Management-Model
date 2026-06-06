@@ -16,6 +16,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.budget import calculate_budget_progress, current_month_context, prepare_monthly_budget_targets
+from src.baseline import BaselinePricingConfig, generate_baseline_pricing_recommendations
 from src.elasticity import expected_rooms_sold
 from src.evaluation import (
     build_policy_evaluation_metrics,
@@ -37,6 +38,7 @@ from src.ingest import process_file
 from src.metrics import calculate_daily_metrics, export_metrics
 from src.pace import calculate_pace_analysis, load_historical_data
 from src.pricing import PricingConfig, build_priority_lists, generate_rate_recommendations, simulate_elasticity_pricing
+from src.tailored import build_tailored_recommendations, build_tailored_summary
 from src.utils import ensure_directory_exists, get_timestamp, print_error
 from src.validate import (
     check_data_quality,
@@ -208,6 +210,71 @@ def _build_baseline_vs_new_policy(
     ].sort_values("stay_date").reset_index(drop=True)
 
 
+def _build_uploaded_stly_reference(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize an uploaded comparison dataset into the STLY shape used downstream."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=["stay_date", "stly_occupancy", "stly_rooms_sold", "stly_adr", "stly_revenue"])
+
+    ref = df.copy()
+    ref["stay_date"] = pd.to_datetime(ref["stay_date"], errors="coerce")
+    ref = ref.dropna(subset=["stay_date"]).copy()
+    if len(ref) == 0:
+        return pd.DataFrame(columns=["stay_date", "stly_occupancy", "stly_rooms_sold", "stly_adr", "stly_revenue"])
+
+    rename_map = {}
+    if "occupancy" in ref.columns:
+        rename_map["occupancy"] = "stly_occupancy"
+    if "rooms_sold" in ref.columns:
+        rename_map["rooms_sold"] = "stly_rooms_sold"
+    if "adr" in ref.columns:
+        rename_map["adr"] = "stly_adr"
+    if "room_revenue" in ref.columns:
+        rename_map["room_revenue"] = "stly_revenue"
+
+    ref = ref.rename(columns=rename_map)
+    cols = ["stay_date", "stly_occupancy", "stly_rooms_sold", "stly_adr", "stly_revenue"]
+    for col in cols:
+        if col not in ref.columns:
+            ref[col] = pd.NA
+    return ref[cols].copy()
+
+
+def _select_user_comparison_frames(
+    historical_metrics: pd.DataFrame,
+    future_df: pd.DataFrame,
+    repo_stly_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None, bool]:
+    """Choose current/prior comparison frames, preferring uploaded adjacent-year files."""
+    fallback_current = historical_metrics
+    fallback_prior = repo_stly_df
+
+    if future_df is None or len(future_df) == 0:
+        return fallback_current, fallback_prior, fallback_prior, False
+
+    future_candidate = future_df.copy()
+    future_candidate["stay_date"] = pd.to_datetime(future_candidate.get("stay_date"), errors="coerce")
+    future_candidate = future_candidate.dropna(subset=["stay_date"]).copy()
+    if len(future_candidate) == 0:
+        return fallback_current, fallback_prior, fallback_prior, False
+
+    required_metric_cols = {"rooms_available", "rooms_sold", "room_revenue"}
+    if not required_metric_cols.issubset(future_candidate.columns):
+        return fallback_current, fallback_prior, fallback_prior, False
+
+    hist_years = set(pd.to_datetime(historical_metrics["stay_date"], errors="coerce").dropna().dt.year.unique().tolist())
+    future_years = set(future_candidate["stay_date"].dt.year.unique().tolist())
+    if not hist_years or not future_years:
+        return fallback_current, fallback_prior, fallback_prior, False
+
+    # Treat the uploaded files as the comparison pair when the second file is from a later year.
+    if min(future_years) <= max(hist_years):
+        return fallback_current, fallback_prior, fallback_prior, False
+
+    future_metrics = calculate_daily_metrics(future_candidate)
+    uploaded_prior = _build_uploaded_stly_reference(historical_metrics)
+    return future_metrics, historical_metrics, uploaded_prior, True
+
+
 def run_pipeline(
     input_path: str,
     future_path: str | None = None,
@@ -237,6 +304,16 @@ def run_pipeline(
         max_daily_change_pct=float(config.get("max_change_pct", 0.10)),
         weekend_premium_min=float(config.get("weekend_premium_min", 1.0)),
         weekend_premium_max=float(config.get("weekend_premium_max", 1.15)),
+    )
+
+    baseline_config = BaselinePricingConfig(
+        high_occupancy_threshold=float(config.get("baseline_high_threshold", 0.85)),
+        low_occupancy_threshold=float(config.get("baseline_low_threshold", 0.55)),
+        high_occupancy_increase_pct=float(config.get("baseline_high_increase_pct", 0.05)),
+        low_occupancy_decrease_pct=float(config.get("baseline_low_decrease_pct", -0.05)),
+        moderate_occupancy_change_pct=float(config.get("baseline_moderate_change_pct", 0.00)),
+        rate_floor=float(config.get("rate_floor", 99.0)),
+        rate_ceiling=float(config.get("rate_ceiling", 399.0)),
     )
 
     # Historical base dataset.
@@ -330,23 +407,28 @@ def run_pipeline(
 
     # Pace/event context.
     historical_dir = Path(__file__).parent / "data" / "historical"
-    stly_df = load_historical_data(str(historical_dir))
+    repo_stly_df = load_historical_data(str(historical_dir))
+    yoy_current_df, yoy_prior_df, stly_df, using_uploaded_comparison = _select_user_comparison_frames(
+        historical_metrics,
+        future_df,
+        repo_stly_df,
+    )
 
     yoy_field_checks = {
         "current": validate_required_fields_for_yoy(
-            historical_metrics,
+            yoy_current_df,
             YOY_REQUIRED_FIELDS,
             dataset_label="current_year",
         ),
         "prior": validate_required_fields_for_yoy(
-            stly_df,
+            yoy_prior_df,
             YOY_REQUIRED_FIELDS,
             dataset_label="prior_year",
         ),
     }
 
     # Week 5 YoY output: keep this independent from pace to preserve baseline flows.
-    yoy_df = build_yoy_comparison(historical_metrics, stly_df)
+    yoy_df = build_yoy_comparison(yoy_current_df, yoy_prior_df)
     yoy_summary = summarize_yoy(yoy_df)
     yoy_path = output_dir / "yoy_comparison.csv"
     yoy_df.to_csv(yoy_path, index=False)
@@ -374,6 +456,19 @@ def run_pipeline(
         how="left",
     )
     future_context["forecast_occ"] = future_context["forecast_occ"].fillna(0.0)
+
+    baseline_input_df = future_context.copy()
+    baseline_input_df["occupancy"] = pd.to_numeric(
+        baseline_input_df.get("occupancy", baseline_input_df.get("forecast_occ", pd.Series(dtype=float))),
+        errors="coerce",
+    )
+    baseline_reco_df = generate_baseline_pricing_recommendations(
+        baseline_input_df,
+        historical_df=yoy_prior_df,
+        config=baseline_config,
+    )
+    baseline_reco_path = output_dir / "baseline_recommendations.csv"
+    baseline_reco_df.to_csv(baseline_reco_path, index=False)
 
     # Build a month-scoped on-books + pickup projection for dashboard metrics.
     # Derive the forecast month/year from the uploaded data itself, not from system date
@@ -693,6 +788,21 @@ def run_pipeline(
         recommendations_df["recommended_rate"] = recommendations_df["new_policy_rate"]
     recommendations_df.to_csv(recommendations_path, index=False)
 
+    tailored_results_df = build_tailored_recommendations(
+        future_context,
+        baseline_reco_df,
+        config.get("tailored_settings"),
+    )
+    tailored_results_path = output_dir / "tailored_model_results.csv"
+    tailored_results_df.to_csv(tailored_results_path, index=False)
+
+    tailored_summary_df = build_tailored_summary(
+        tailored_results_df,
+        config.get("tailored_settings"),
+    )
+    tailored_summary_path = output_dir / "tailored_model_summary.csv"
+    tailored_summary_df.to_csv(tailored_summary_path, index=False)
+
     top_raise_df, top_rescue_df, top_monitor_df, priority_full_df = build_priority_lists(
         recommendations_df,
         budget_gap=float(budget_summary.get("remaining_budget", 0.0)),
@@ -753,8 +863,11 @@ def run_pipeline(
         "daily_metrics": str(daily_metrics_path),
         "validation_report": str(validation_path),
         "yoy_comparison": str(yoy_path),
+        "baseline_recommendations": str(baseline_reco_path),
         "forecast": str(forecast_path),
         "rate_recommendations": str(recommendations_path),
+        "tailored_model_results": str(tailored_results_path),
+        "tailored_model_summary": str(tailored_summary_path),
         "top_raise_opportunities": str(top_raise_path),
         "top_rescue_dates": str(top_rescue_path),
         "top_monitor_dates": str(top_monitor_path),
@@ -768,8 +881,12 @@ def run_pipeline(
         "forecast_metrics": forecast_metrics,
         "yoy_summary": yoy_summary,
         "yoy_field_checks": yoy_field_checks,
+        "using_uploaded_comparison": using_uploaded_comparison,
+        "baseline_rows": int(len(baseline_reco_df)),
+        "baseline_unavailable_rows": int((baseline_reco_df.get("baseline_status", pd.Series(dtype=str)) == "UNAVAILABLE").sum()),
         "projected_uplift_vs_baseline": projected_uplift,
         "heavy_need_days": int(len(top_raise_df)),
+        "tailored_summary": tailored_summary_df.iloc[0].to_dict() if len(tailored_summary_df) else {},
     }
 
     return output_paths, summary
