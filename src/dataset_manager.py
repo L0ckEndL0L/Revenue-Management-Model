@@ -12,6 +12,8 @@ import pandas as pd
 
 DATASETS_DIR = Path("datasets")
 METADATA_FILE = DATASETS_DIR / "datasets_metadata.json"
+BUDGETS_DIR = DATASETS_DIR / "budgets"
+BUDGETS_METADATA_FILE = DATASETS_DIR / "budgets_metadata.json"
 
 
 def _sanitize_dataset_name(name: str) -> str:
@@ -24,6 +26,12 @@ def _sanitize_dataset_name(name: str) -> str:
 def _ensure_datasets_dir() -> None:
     """Create datasets directory if it doesn't exist."""
     DATASETS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_budgets_dir() -> None:
+    """Create budgets directory if it doesn't exist."""
+    _ensure_datasets_dir()
+    BUDGETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_metadata() -> Dict[str, dict]:
@@ -39,6 +47,22 @@ def _save_metadata(metadata: Dict[str, dict]) -> None:
     """Save dataset metadata to JSON file."""
     _ensure_datasets_dir()
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, default=str)
+
+
+def _load_budget_metadata() -> Dict[str, dict]:
+    """Load budget profile metadata from JSON file."""
+    _ensure_budgets_dir()
+    if BUDGETS_METADATA_FILE.exists():
+        with open(BUDGETS_METADATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_budget_metadata(metadata: Dict[str, dict]) -> None:
+    """Save budget profile metadata to JSON file."""
+    _ensure_budgets_dir()
+    with open(BUDGETS_METADATA_FILE, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, default=str)
 
 
@@ -270,3 +294,64 @@ def rename_dataset(old_name: str, new_name: str) -> bool:
     except Exception as e:
         print(f"Error renaming dataset '{old_name}' to '{new_name}': {e}")
         return False
+
+
+def save_budget_profile(hotel_name: str, budget_df: pd.DataFrame) -> bool:
+    """Save a budget profile for a hotel/property."""
+    try:
+        profile_name = _sanitize_dataset_name(hotel_name)
+        if not profile_name or budget_df is None or len(budget_df) == 0:
+            return False
+
+        _ensure_budgets_dir()
+        file_path = BUDGETS_DIR / f"{profile_name}.csv"
+        budget_df.to_csv(file_path, index=False)
+
+        metadata = _load_budget_metadata()
+        now_iso = datetime.now().isoformat()
+        columns = [str(c).strip().lower() for c in budget_df.columns]
+        budget_type = "unknown"
+        if {"stay_date", "budget_revenue"}.issubset(set(columns)):
+            budget_type = "daily"
+        elif {"year", "month", "budget_revenue"}.issubset(set(columns)):
+            budget_type = "monthly"
+
+        existing = metadata.get(profile_name, {})
+        metadata[profile_name] = {
+            "created_at": existing.get("created_at", now_iso),
+            "updated_at": now_iso,
+            "rows": int(len(budget_df)),
+            "budget_type": budget_type,
+            "columns": columns,
+        }
+        _save_budget_metadata(metadata)
+        return True
+    except Exception as e:
+        print(f"Error saving budget profile '{hotel_name}': {e}")
+        return False
+
+
+def load_budget_profile(hotel_name: str) -> Optional[pd.DataFrame]:
+    """Load a saved budget profile for a hotel/property."""
+    try:
+        profile_name = _sanitize_dataset_name(hotel_name)
+        file_path = BUDGETS_DIR / f"{profile_name}.csv"
+        if not file_path.exists():
+            return None
+        return pd.read_csv(file_path)
+    except Exception as e:
+        print(f"Error loading budget profile '{hotel_name}': {e}")
+        return None
+
+
+def list_budget_profiles() -> List[str]:
+    """List all saved budget profile names."""
+    _ensure_budgets_dir()
+    metadata = _load_budget_metadata()
+    return sorted(metadata.keys())
+
+
+def get_budget_profile_info(hotel_name: str) -> Optional[Dict]:
+    """Get metadata for a specific budget profile."""
+    metadata = _load_budget_metadata()
+    return metadata.get(hotel_name)

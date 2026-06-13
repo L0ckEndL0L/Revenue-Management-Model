@@ -527,10 +527,16 @@ def run_pipeline(
     forecast_rate_series = forecast_rate_series.where(forecast_rate_series > 0).fillna(fallback_future_rate)
     forecast_rate_series = forecast_rate_series.clip(lower=rate_floor_hist, upper=rate_ceiling_hist)
 
-    # Revenue to date comes exclusively from the future on-books report.
-    actual_revenue_to_date = float(
-        pd.to_numeric(month_future.get("room_revenue", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
-    ) if len(month_future) else 0.0
+    # Revenue to date should reflect the current on-books value even before stays are finalized.
+    actual_revenue_to_date = 0.0
+    if len(month_future):
+        otb_revenue = pd.to_numeric(month_future.get("room_revenue", pd.Series(dtype=float)), errors="coerce")
+        otb_rooms = pd.to_numeric(month_future.get("rooms_sold", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+        otb_rate = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
+        otb_rate = otb_rate.where(otb_rate > 0).fillna(float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate))
+        derived_otb_revenue = otb_rooms * otb_rate
+        otb_revenue = otb_revenue.where(otb_revenue > 0, derived_otb_revenue).fillna(0.0)
+        actual_revenue_to_date = float(otb_revenue.sum())
 
     # Initialize STLY anchors for downstream forecast safeguards.
     stly_has_data = False
@@ -710,16 +716,25 @@ def run_pipeline(
         forecast_revenue_remaining = 0.0
 
     # Keep OTB unchanged and add projected pickup on top.
-    month_end_forecast = actual_revenue_to_date + max(0.0, forecast_revenue_remaining)
+    projected_from_otb = actual_revenue_to_date + max(0.0, forecast_revenue_remaining)
+    month_end_forecast = projected_from_otb
 
-    # Revenue anchor: keep forecast close to prior-year OTB month-end revenue when
-    # STLY data is available. This prevents trivial uplift over OTB in low-pace cases.
-    # Default ratio 1.00 means "at least match STLY OTB month-end revenue".
+    # Blend OTB projection with STLY month revenue to avoid overreacting in either direction.
     if stly_has_data and stly_month_revenue > 0:
-        stly_revenue_floor_ratio = float(config.get("stly_revenue_floor_ratio", 1.00))
-        stly_revenue_floor_ratio = max(0.0, stly_revenue_floor_ratio)
-        stly_revenue_floor = stly_month_revenue * stly_revenue_floor_ratio
-        month_end_forecast = max(month_end_forecast, stly_revenue_floor)
+        stly_anchor_weight = float(config.get("stly_revenue_anchor_weight", 0.35))
+        stly_anchor_weight = float(np.clip(stly_anchor_weight, 0.0, 1.0))
+        month_end_forecast = (
+            projected_from_otb * (1.0 - stly_anchor_weight)
+            + stly_month_revenue * stly_anchor_weight
+        )
+
+        # Optional high-side guardrail relative to STLY month performance.
+        stly_revenue_cap_ratio = float(config.get("stly_revenue_cap_ratio", 1.10))
+        if stly_revenue_cap_ratio > 0:
+            month_end_forecast = min(month_end_forecast, stly_month_revenue * stly_revenue_cap_ratio)
+
+    # Never project below what is already on the books.
+    month_end_forecast = max(month_end_forecast, actual_revenue_to_date)
 
     # Reasonableness guardrail: do not exceed a high-side revenue capacity envelope
     # unless explicitly overridden.
@@ -746,24 +761,49 @@ def run_pipeline(
     }
 
     if budget_path:
-        current_year, current_month, _ = current_month_context()
         daily_budget_df, _ = prepare_monthly_budget_targets(
             budget_path=budget_path,
-            current_year=current_year,
-            current_month=current_month,
+            current_year=target_year,
+            current_month=target_month,
             historical_df=historical_metrics,
             daily_distribution_method=str(config.get("budget_distribution", "dow_weighted")),
         )
-        forecast_remaining_for_budget = future_context[["stay_date", "rooms_available", "forecast_rooms_sold"]].copy()
-        forecast_remaining_for_budget["forecast_revenue"] = (
-            forecast_remaining_for_budget["forecast_rooms_sold"] * future_context["current_rate"].fillna(future_context["current_rate"].median())
+
+        # Budget progress should be computed on the same target month shown in the dashboard
+        # (derived above from uploaded data), not on all historical/future rows.
+        forecast_remaining_for_budget = month_future[["stay_date", "rooms_available", "forecast_rooms_sold", "rooms_sold"]].copy()
+        budget_rate_series = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
+        budget_rate_series = budget_rate_series.where(budget_rate_series > 0).fillna(
+            float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate)
         )
-        month_actual_for_budget = historical_metrics[["stay_date", "room_revenue", "rooms_available", "rooms_sold"]].copy()
+        pickup_rooms_for_budget = (
+            pd.to_numeric(forecast_remaining_for_budget["forecast_rooms_sold"], errors="coerce").fillna(0.0)
+            - pd.to_numeric(forecast_remaining_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
+        ).clip(lower=0.0)
+        forecast_remaining_for_budget["forecast_revenue"] = pickup_rooms_for_budget * budget_rate_series
+
+        month_actual_for_budget = month_future[["stay_date", "room_revenue", "rooms_available", "rooms_sold"]].copy()
+        month_actual_for_budget["room_revenue"] = pd.to_numeric(month_actual_for_budget["room_revenue"], errors="coerce")
+        if month_actual_for_budget["room_revenue"].isna().any() or (month_actual_for_budget["room_revenue"] <= 0).all():
+            fallback_rooms = pd.to_numeric(month_actual_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
+            fallback_rates = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
+            fallback_rates = fallback_rates.where(fallback_rates > 0).fillna(float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate))
+            month_actual_for_budget["room_revenue"] = month_actual_for_budget["room_revenue"].where(
+                month_actual_for_budget["room_revenue"] > 0,
+                fallback_rooms * fallback_rates,
+            )
+
+        budget_as_of_date = as_of_date
+        if len(month_actual_for_budget):
+            budget_as_of_date = pd.to_datetime(month_actual_for_budget["stay_date"], errors="coerce").max()
+            if pd.isna(budget_as_of_date):
+                budget_as_of_date = as_of_date
+
         budget_summary = calculate_budget_progress(
             month_actual_df=month_actual_for_budget,
             forecast_remaining_df=forecast_remaining_for_budget,
             daily_budget_df=daily_budget_df,
-            as_of_date=as_of_date,
+            as_of_date=budget_as_of_date,
         )
 
     # Baseline policy output for comparison.

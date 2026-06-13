@@ -4,9 +4,10 @@ Handles data ingestion from CSV and Excel files, including column mapping.
 """
 
 import csv
-import pandas as pd
 from pathlib import Path
 from typing import Dict, Optional
+
+import pandas as pd
 from pandas.errors import ParserError
 from src.schema import (
     auto_map_columns,
@@ -54,6 +55,117 @@ def _drop_report_artifact_rows(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
+def _find_report_header_row(raw_df: pd.DataFrame, scan_limit: int = 25) -> int | None:
+    """Find a likely header row in PMS-style tabular exports with metadata preamble."""
+    if raw_df.empty:
+        return None
+
+    max_rows = min(scan_limit, len(raw_df))
+    for i in range(max_rows):
+        row_values = [str(v).strip().lower() for v in raw_df.iloc[i].tolist()]
+        if "date" in row_values and (
+            "room revenue" in row_values
+            or "occupancy %" in row_values
+            or "occupancy" in row_values
+            or "rooms sold" in row_values
+        ):
+            return i
+    return None
+
+
+def _promote_embedded_header_row(df: pd.DataFrame, scan_limit: int = 25) -> pd.DataFrame:
+    """Promote an in-file header row when metadata was parsed as the DataFrame header."""
+    if df.empty:
+        return df
+
+    column_names = [str(col).strip().lower() for col in df.columns]
+    unnamed_count = sum(name.startswith("unnamed:") for name in column_names)
+    preamble_like = (
+        unnamed_count >= max(2, len(column_names) // 2)
+        or any(name in {"start date:", "end date:"} for name in column_names)
+    )
+    if not preamble_like:
+        return df
+
+    max_rows = min(scan_limit, len(df))
+    header_row = None
+    for i in range(max_rows):
+        row_values = [str(v).strip().lower() for v in df.iloc[i].tolist()]
+        has_date = any(v == "date" or v.startswith("date ") for v in row_values)
+        has_metric = any(
+            ("room revenue" in v)
+            or ("occupancy" in v)
+            or (v == "adr")
+            or ("rooms sold" in v)
+            for v in row_values
+        )
+        if has_date and has_metric:
+            header_row = i
+            break
+
+    if header_row is None:
+        return df
+
+    promoted = df.iloc[header_row + 1 :].copy()
+    promoted.columns = [str(v).strip() for v in df.iloc[header_row].tolist()]
+    return promoted
+
+
+def _make_unique_column_names(columns: list[str]) -> list[str]:
+    """Return stable unique column names while preserving left-to-right order."""
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+
+    for idx, raw_name in enumerate(columns):
+        name = str(raw_name).strip()
+        if not name or name.lower() == "nan":
+            name = f"Unnamed: {idx}"
+
+        count = seen.get(name, 0)
+        if count == 0:
+            unique_name = name
+        else:
+            unique_name = f"{name}_{count}"
+
+        seen[name] = count + 1
+        unique.append(unique_name)
+
+    return unique
+
+
+def clean_report_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply lightweight cleaning for PMS report-shaped tabular data."""
+    if df.empty:
+        return df
+
+    cleaned = _promote_embedded_header_row(df.copy())
+    cleaned.columns = _make_unique_column_names([str(col).strip() for col in cleaned.columns])
+
+    cleaned = cleaned.dropna(how="all")
+    cleaned = cleaned.dropna(axis=1, how="all")
+    cleaned = _drop_report_artifact_rows(cleaned)
+
+    return cleaned.reset_index(drop=True)
+
+
+def read_excel_with_report_header(file_source) -> pd.DataFrame:
+    """Read Excel while handling exports where the true header appears below metadata rows."""
+    if hasattr(file_source, "seek"):
+        file_source.seek(0)
+    raw = pd.read_excel(file_source, header=None)
+    header_row = _find_report_header_row(raw)
+
+    if header_row is None:
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        return clean_report_dataframe(pd.read_excel(file_source))
+
+    header = [str(v).strip() for v in raw.iloc[header_row].tolist()]
+    body = raw.iloc[header_row + 1 :].copy()
+    body.columns = header
+    return clean_report_dataframe(body)
+
+
 def load_file(file_path: str) -> pd.DataFrame:
     """
     Load data from CSV or Excel file.
@@ -93,9 +205,7 @@ def load_file(file_path: str) -> pd.DataFrame:
                 if header_row is not None:
                     local_df = pd.read_csv(path, skiprows=header_row)
 
-            local_df = _drop_report_artifact_rows(local_df)
-
-            return local_df
+            return clean_report_dataframe(local_df)
 
         fallback_errors = []
         try:
@@ -125,7 +235,7 @@ def load_file(file_path: str) -> pd.DataFrame:
                                 quoting=csv.QUOTE_NONE,
                                 on_bad_lines='skip',
                             )
-                            df = _drop_report_artifact_rows(df)
+                            df = clean_report_dataframe(df)
                             print("[WARNING] CSV contained malformed quote formatting. Some bad rows may have been skipped.")
                         except Exception as e4:
                             fallback_errors.append(str(e4))
@@ -137,10 +247,10 @@ def load_file(file_path: str) -> pd.DataFrame:
         except Exception as e:
             raise ValueError(f"Error reading CSV file: {str(e)}")
 
-        df = _drop_report_artifact_rows(df)
+        df = clean_report_dataframe(df)
     elif file_extension in ['.xlsx', '.xls']:
         try:
-            df = pd.read_excel(file_path)
+            df = read_excel_with_report_header(file_path)
         except Exception as e:
             raise ValueError(f"Error reading Excel file: {str(e)}")
     else:
@@ -309,6 +419,15 @@ def map_columns(
                         f"[WARNING] Revenue mapping '{revenue_col}' looked incomplete/mis-scaled. "
                         f"Using merged total-revenue columns: {', '.join(revenue_candidates)}"
                     )
+    elif 'room_revenue' not in column_mapping:
+        derived_revenue = _combine_numeric_candidates(df, revenue_candidates)
+        if derived_revenue is not None and int(derived_revenue.notna().sum()) > 0:
+            df['__derived_room_revenue'] = derived_revenue
+            column_mapping['room_revenue'] = '__derived_room_revenue'
+            print(
+                "[WARNING] Auto-mapped room_revenue from currency-like columns: "
+                + ", ".join(revenue_candidates)
+            )
 
     if 'room_revenue' in column_mapping:
         revenue_col = column_mapping['room_revenue']
