@@ -57,7 +57,7 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
     future_mapping: Dict[str, str] = {}
 
     if dataset_loaded_mode:
-        st.info(f"âœ“ Using loaded dataset: **{st.session_state.get('loaded_dataset_name', 'Loaded Dataset')}**")
+        st.info(f"Using loaded dataset: **{st.session_state.get('loaded_dataset_name', 'Loaded Dataset')}**")
         hist_preview = st.session_state.historical_df
         fut_preview = st.session_state.future_df
 

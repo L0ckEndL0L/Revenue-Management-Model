@@ -42,7 +42,7 @@ def render_dataset_panel() -> None:
             if "load_dataset_success" in st.session_state and st.session_state.load_dataset_success:
                 dataset_info = get_dataset_info(selected_dataset)
                 if dataset_info:
-                    st.success(f"âœ“ Loaded: {selected_dataset}")
+                    st.success(f"Loaded: {selected_dataset}")
                     st.caption(f"Created: {dataset_info.get('created_at', 'N/A')[:10]}")
                     st.caption(f"Rows: {dataset_info.get('rows_historical', 0)} hist / {dataset_info.get('rows_future', 0)} future")
         else:
@@ -75,7 +75,7 @@ def render_dataset_panel() -> None:
                         tailored_settings=tailored_settings,
                     )
                     if success:
-                        st.success(f"âœ“ Saved dataset: {dataset_name}")
+                        st.success(f"Saved dataset: {dataset_name}")
                     else:
                         st.error("Failed to save dataset")
             else:
@@ -93,15 +93,15 @@ def render_dataset_panel() -> None:
 
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("ðŸ—‘ï¸ Delete", key="delete_dataset_btn", use_container_width=True):
+                if st.button("Delete", key="delete_dataset_btn", use_container_width=True):
                     if delete_dataset(dataset_to_delete):
-                        st.success(f"âœ“ Deleted: {dataset_to_delete}")
+                        st.success(f"Deleted: {dataset_to_delete}")
                         st.rerun()
                     else:
                         st.error("Failed to delete dataset")
 
             with col2:
-                if st.button("â„¹ï¸ Info", key="info_dataset_btn", use_container_width=True):
+                if st.button("Info", key="info_dataset_btn", use_container_width=True):
                     info = get_dataset_info(dataset_to_delete)
                     if info:
                         st.json(info)
@@ -110,15 +110,15 @@ def render_dataset_panel() -> None:
             st.subheader("All Datasets")
             for ds_name in saved_datasets:
                 info = get_dataset_info(ds_name)
-                with st.expander(f"ðŸ“ {ds_name}"):
+                with st.expander(ds_name):
                     st.caption(f"Created: {info.get('created_at', 'N/A')[:10]}")
                     st.caption(f"Updated: {info.get('updated_at', 'N/A')[:10]}")
                     st.caption(f"Rows: {info.get('rows_historical', 0)} historical / {info.get('rows_future', 0)} future")
                     if info.get("has_events"):
-                        st.caption("âœ“ Has events data")
+                        st.caption("Has events data")
                     if info.get("has_budget"):
-                        st.caption("âœ“ Has budget data")
+                        st.caption("Has budget data")
                     if info.get("has_tailored_settings"):
-                        st.caption("âœ“ Has tailored model settings")
+                        st.caption("Has tailored model settings")
         else:
             st.info("No datasets to manage yet")
