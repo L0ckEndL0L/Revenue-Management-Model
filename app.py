@@ -53,41 +53,42 @@ def _save_uploaded_file(uploaded_file, destination: Path) -> Path:
 
 
 def _render_pricing_sidebar() -> dict:
-    st.header("Pricing Configuration")
-    use_manual_rooms_available = st.checkbox(
-        "Manually set total rooms for all dates",
-        value=st.session_state.get("use_manual_rooms_available", False),
-    )
-    manual_rooms_available = None
-    if use_manual_rooms_available:
-        manual_rooms_default = st.session_state.get("manual_rooms_available")
-        if manual_rooms_default is None:
-            manual_rooms_default = 100
-        manual_rooms_available = int(
-            st.number_input(
-                "Manual rooms available",
-                min_value=0,
-                value=int(manual_rooms_default),
-                step=1,
-            )
+    with st.expander("Advanced Pricing Settings", expanded=False):
+        st.header("Pricing Configuration")
+        use_manual_rooms_available = st.checkbox(
+            "Manually set total rooms for all dates",
+            value=st.session_state.get("use_manual_rooms_available", False),
         )
+        manual_rooms_available = None
+        if use_manual_rooms_available:
+            manual_rooms_default = st.session_state.get("manual_rooms_available")
+            if manual_rooms_default is None:
+                manual_rooms_default = 100
+            manual_rooms_available = int(
+                st.number_input(
+                    "Manual rooms available",
+                    min_value=0,
+                    value=int(manual_rooms_default),
+                    step=1,
+                )
+            )
 
-    st.session_state.use_manual_rooms_available = use_manual_rooms_available
-    st.session_state.manual_rooms_available = manual_rooms_available
+        st.session_state.use_manual_rooms_available = use_manual_rooms_available
+        st.session_state.manual_rooms_available = manual_rooms_available
 
-    return {
-        "use_manual_rooms_available": use_manual_rooms_available,
-        "manual_rooms_available": manual_rooms_available,
-        "rate_floor": st.number_input("Rate floor", min_value=0.0, value=99.0, step=1.0),
-        "rate_ceiling": st.number_input("Rate ceiling", min_value=0.0, value=399.0, step=1.0),
-        "max_change_pct": st.slider("Max daily change %", min_value=0.0, max_value=50.0, value=10.0, step=0.5),
-        "high_threshold": st.slider("High occupancy threshold %", min_value=50.0, max_value=100.0, value=85.0),
-        "low_threshold": st.slider("Low occupancy threshold %", min_value=0.0, max_value=80.0, value=50.0),
-        "elasticity": st.number_input("Elasticity", min_value=0.2, max_value=3.0, value=1.2, step=0.1),
-        "default_current_rate": st.number_input("Default current rate fallback", min_value=0.0, value=120.0, step=1.0),
-        "use_interactive_charts": st.checkbox("Use interactive charts", value=True),
-        "output_base": st.text_input("Output folder", value="outputs"),
-    }
+        return {
+            "use_manual_rooms_available": use_manual_rooms_available,
+            "manual_rooms_available": manual_rooms_available,
+            "rate_floor": st.number_input("Rate floor", min_value=0.0, value=99.0, step=1.0),
+            "rate_ceiling": st.number_input("Rate ceiling", min_value=0.0, value=399.0, step=1.0),
+            "max_change_pct": st.slider("Max daily change %", min_value=0.0, max_value=50.0, value=10.0, step=0.5),
+            "high_threshold": st.slider("High occupancy threshold %", min_value=50.0, max_value=100.0, value=85.0),
+            "low_threshold": st.slider("Low occupancy threshold %", min_value=0.0, max_value=80.0, value=50.0),
+            "elasticity": st.number_input("Elasticity", min_value=0.2, max_value=3.0, value=1.2, step=0.1),
+            "default_current_rate": st.number_input("Default current rate fallback", min_value=0.0, value=120.0, step=1.0),
+            "use_interactive_charts": st.checkbox("Use interactive charts", value=True),
+            "output_base": st.text_input("Output folder", value="outputs"),
+        }
 
 
 def _run_dashboard() -> None:
@@ -96,18 +97,32 @@ def _run_dashboard() -> None:
     apply_pending_tailored_session_update()
     initialize_tailored_session()
 
-    st.title("Hotel RMS - Forward Pricing Simulator")
-    st.write("Upload historical + future on-books reports, run demand-aware pricing simulation, and review explainable recommendations.")
+    st.title("Hotel Revenue Management Decision Support System")
+    st.write(
+        "This dashboard cleans hotel PMS-style data, calculates KPIs, compares YoY performance, "
+        "forecasts demand, and produces explainable pricing recommendations."
+    )
+    st.markdown(
+        """
+        **Workflow**
+        1. Load demo data or upload PMS reports
+        2. Validate and map fields
+        3. Run pricing simulation
+        4. Review KPIs, YoY, budget impact, tailored model output, and recommendations
+        """
+    )
 
     with st.sidebar:
         render_dataset_panel()
         st.divider()
         pricing_config = _render_pricing_sidebar()
         st.divider()
-        render_tailored_sidebar()
+        with st.expander("Tailored Model Settings", expanded=False):
+            render_tailored_sidebar()
 
     upload_state = render_upload_panel(pricing_config["use_manual_rooms_available"])
-    _, budget_input_mode = render_budget_panel()
+    with st.expander("Budget Settings", expanded=False):
+        _, budget_input_mode = render_budget_panel()
 
     tailored_future_preview = prepare_tailored_future_preview(
         upload_state["fut_preview"],

@@ -1,25 +1,28 @@
-# Flexible Revenue Management System for Hotel Pricing Decision Support
+# Hotel Revenue Management Decision Support System
 
-A Python and Streamlit revenue management prototype that helps hotels clean PMS-style data, calculate core KPIs, compare year-over-year performance, forecast future demand, and produce explainable pricing recommendations. The project was built as a capstone-ready decision-support system for hotel revenue managers who need a clearer way to move from raw reports to actionable rate guidance.
+A Python and Streamlit capstone project that helps hotels clean PMS-style data, calculate KPIs, compare year-over-year performance, forecast demand, and produce explainable pricing recommendations.
+
+The project supports both:
+
+* A Streamlit dashboard for board review and interactive analysis
+* A CLI pipeline for repeatable local runs and testing
+
+## Capstone Board Access
+
+**Live Demo:** To be added after deployment.
+
+Board review steps:
+
+1. Open the web app.
+2. Click **Load Demo Dataset**.
+3. Click **Run Pricing Simulation**.
+4. Review **Outputs**, **Tailored Model**, **Rate Recommendations**, and **YoY** tabs.
+
+The demo workflow uses safe sample data included in this repository. It does not require private PMS files, saved datasets, generated outputs, or secrets.
 
 ## Project Overview
 
 Hotels often rely on static pricing rules, manual spreadsheet updates, or once-daily rate reviews. Those workflows can make it difficult to react to occupancy pace, budget gaps, local events, and inconsistent PMS exports. This project provides an end-to-end workflow that standardizes hotel data, validates inputs, calculates performance metrics, and compares multiple pricing approaches in a repeatable way.
-
-The application supports both a Streamlit dashboard for interactive analysis and a CLI pipeline for repeatable runs and testing.
-
-## Current Capstone Focus
-
-The current version includes three pricing layers:
-
-1. **Baseline once-daily model**
-   A transparent comparison model that uses simple occupancy thresholds and historical ADR context.
-
-2. **Enhanced RMS recommendation engine**
-   A forward-looking model that considers on-books demand, forecasted occupancy, event impact, budget pressure, elasticity, and rate guardrails.
-
-3. **Tailored model layer**
-   A configurable model that adjusts baseline recommendations using property type, segment focus, KPI priorities, demand sensitivity, seasonality, event impact, and day-by-day median rate inputs.
 
 ## Key Features
 
@@ -27,8 +30,8 @@ The current version includes three pricing layers:
 * PMS-style report cleaning, including files with metadata/header rows
 * Automated and assisted column mapping
 * Historical and future on-the-books data handling
-* Saved datasets to avoid repeated imports
-* Saved budget profiles
+* Safe demo dataset loader for Streamlit Community Cloud
+* Saved local datasets and budget profiles
 * Manual rooms-available override for reports missing inventory
 * Validation pipeline for required fields, missing values, invalid dates, and overbooking checks
 * Daily KPI calculations for occupancy, ADR, RevPAR, rooms sold, and room revenue
@@ -38,114 +41,44 @@ The current version includes three pricing layers:
 * Event impact handling
 * Baseline once-daily pricing recommendations
 * Enhanced rate recommendation engine
-* Baseline vs enhanced policy comparison
-* Tailored model settings that persist with saved datasets
-* Day-by-day median rate table for tailored recommendations
-* Manual daily median rate overrides with timestamps
-* Dataset-derived median rate suggestions by stay date
+* Tailored model settings and day-by-day median rate inputs
 * Explainable recommendation outputs with confidence, warnings, and reasoning notes
-* Streamlit dashboard interface
-* CLI pipeline support
 * CSV and chart exports for reporting
-
-## How the System Works
-
-1. **Import data**
-   Upload or provide historical PMS data, future on-the-books data, optional event data, and optional budget data.
-
-2. **Clean and standardize fields**
-   The system normalizes PMS-style exports and maps inconsistent column names into a standard schema.
-
-3. **Validate inputs**
-   Required fields are checked before downstream calculations. Invalid rows are flagged through a validation report.
-
-4. **Calculate KPIs**
-   Daily occupancy, ADR, RevPAR, rooms sold, and room revenue are calculated from standardized data.
-
-5. **Build forecast context**
-   Future rows are combined with historical performance, same-time-last-year context, pace indicators, event impact, and budget information.
-
-6. **Generate pricing outputs**
-   The pipeline produces baseline recommendations, enhanced recommendations, tailored recommendations, priority lists, and evaluation metrics.
-
-7. **Export results**
-   Each run creates a timestamped output folder containing CSV files, summaries, and generated chart images.
-
-## Data Requirements
-
-Minimum historical input fields:
-
-* `stay_date`
-* `rooms_available` or a manual rooms-available override
-* `rooms_sold`
-* `room_revenue`
-
-Optional supported fields:
-
-* `adr`
-* `current_rate`
-* `occupancy_percent`
-* `booking_date`
-* event indicators
-* budget targets
-
-Future on-the-books inputs should include:
-
-* `stay_date`
-* `rooms_available` or a manual rooms-available override
-* `rooms_sold`
-* `current_rate`, `adr`, or enough revenue data to derive rate context
-
-Column names do not need to match perfectly. The project attempts to map common aliases automatically, and the dashboard supports manual mapping when needed.
 
 ## Demo Data
 
-The repository includes sample files for testing and demonstration.
+The repository includes safe sample files for testing, demonstration, and board review:
 
 ```text
 data/
-├── sample_data.csv
-├── future_on_books_sample.csv
-├── events_sample.csv
-├── budget_daily_sample.csv
-└── budget_monthly_sample.csv
+|-- sample_data.csv
+|-- future_on_books_sample.csv
+|-- events_sample.csv
+|-- budget_daily_sample.csv
+|-- budget_monthly_sample.csv
 
 data/historical/
-└── occupancy_2024.csv
+|-- occupancy_2024.csv
 ```
 
-Additional local PMS exports and saved dashboard datasets are intended for local use and should remain outside version control when they contain real or private data.
+Additional local PMS exports, generated output folders, saved dashboard datasets, and secrets should remain outside version control.
 
-## Project Structure
+## Web Deployment
 
-```text
-Revenue-Management-Model/
-├── app.py                    # Streamlit dashboard
-├── main.py                   # CLI and end-to-end pipeline entry point
-├── requirements.txt          # Python dependencies
-├── data/                     # Safe demo/sample data
-├── outputs/                  # Generated run outputs
-├── datasets/                 # Locally saved dashboard datasets
-├── tests/                    # Pytest coverage
-└── src/
-    ├── baseline.py           # Baseline once-daily pricing model
-    ├── budget.py             # Budget progress and target logic
-    ├── dataset_manager.py    # Saved dataset and budget profile handling
-    ├── elasticity.py         # Elasticity demand assumptions
-    ├── evaluation.py         # Forecast and policy evaluation outputs
-    ├── events.py             # Event impact handling
-    ├── forecast.py           # Forecast and backtesting functions
-    ├── ingest.py             # File import and cleaning
-    ├── metrics.py            # KPI calculations
-    ├── pace.py               # Pace and STLY analysis
-    ├── pricing.py            # Enhanced pricing recommendation logic
-    ├── schema.py             # Column mapping helpers
-    ├── tailored.py           # Property-specific tailored model layer
-    ├── validate.py           # Data validation pipeline
-    └── yoy.py                # Year-over-year comparison logic
-```
+This app is prepared for Streamlit Community Cloud.
 
-## Installation
+Deployment steps:
+
+1. Push the repository to GitHub.
+2. Confirm only safe demo data is tracked.
+3. In Streamlit Community Cloud, create a new app from this repository.
+4. Set the app entry point to `app.py`.
+5. Deploy.
+6. Add the deployed URL to the **Live Demo** line above.
+
+The deployment config is in `.streamlit/config.toml`. Secrets should be stored only in Streamlit Cloud settings or a local `.streamlit/secrets.toml` file, which is ignored by git.
+
+## Local Installation
 
 Clone the repository:
 
@@ -184,13 +117,7 @@ pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-You can also run:
-
-```bash
-python app.py
-```
-
-The dashboard supports uploading historical data, future on-the-books data, optional events, and optional budget files. It also supports saving and loading datasets so the same files and tailored settings can be reused across sessions.
+The dashboard supports demo loading, file uploads, saved local datasets, budget inputs, field mapping, tailored settings, pipeline execution, charts, and downloadable outputs.
 
 ## Run the CLI Pipeline
 
@@ -252,29 +179,38 @@ Each pipeline run creates a timestamped folder under `outputs/`. Common exported
 * `priority_score_by_date.png`
 * `forecast_vs_actual.png`
 
-## Tailored Model Layer
+## Project Structure
 
-The tailored model is designed to make the pricing output more property-specific while still staying explainable. It starts with the baseline recommendation and adjusts it based on configurable business assumptions.
-
-Supported tailored settings include:
-
-* property type
-* segment focus
-* occupancy sensitivity
-* ADR sensitivity
-* RevPAR priority
-* rooms-sold priority
-* revenue priority
-* demand adjustment factor
-* seasonality adjustment factor
-* event impact factor
-* minimum acceptable rate
-* maximum recommended rate
-* global median rate fallback
-* median rate update frequency
-* day-by-day manual median rate inputs
-
-The day-by-day median rate workflow allows the system to use a different median rate for each stay date instead of relying only on one global median rate for the entire forecast. The system can suggest a dataset-derived median rate by stay date, allow manual overrides, and track when manual values were updated.
+```text
+Revenue-Management-Model/
+|-- app.py
+|-- main.py
+|-- requirements.txt
+|-- data/
+|-- tests/
+|-- ui/
+|-- src/
+|   |-- baseline.py
+|   |-- budget.py
+|   |-- dataset_manager.py
+|   |-- elasticity.py
+|   |-- evaluation.py
+|   |-- events.py
+|   |-- forecast.py
+|   |-- ingest.py
+|   |-- metrics.py
+|   |-- pace.py
+|   |-- pricing.py
+|   |-- schema.py
+|   |-- tailored.py
+|   |-- validate.py
+|   |-- yoy.py
+|   |-- pipeline_budget_forecast.py
+|   |-- pipeline_config.py
+|   |-- pipeline_inputs.py
+|   |-- pipeline_outputs.py
+|   |-- pipeline_reporting.py
+```
 
 ## Validation and Testing
 
@@ -290,23 +226,10 @@ Run the test suite:
 python -m pytest
 ```
 
-The project includes tests for major pipeline components, validation behavior, baseline recommendations, YoY logic, tailored model behavior, and integration workflows.
-
 ## Current Development Status
 
 This is a working capstone and portfolio prototype. It demonstrates a full hotel revenue-management workflow from data import through explainable pricing recommendations. The project is not intended to replace a production RMS, but it is structured to show practical data cleaning, model comparison, business-rule design, validation, testing, and dashboard delivery.
 
-## Future Improvements
-
-* Add more real-world safe sample datasets
-* Expand test coverage for edge cases and larger files
-* Improve event demand signal engineering
-* Add more detailed model evaluation summaries
-* Add dashboard screenshots and reporting visuals
-* Package the app for hosted demo deployment
-* Improve documentation for accepted PMS export formats
-
 ## Author
 
 Thomas Hayden
-

@@ -85,7 +85,9 @@ data/historical/*.csv
 *.log
 
 # Streamlit cache and config
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
+.streamlit/secrets.toml
 streamlit_config.yaml
 
 # Python profiling and type checking

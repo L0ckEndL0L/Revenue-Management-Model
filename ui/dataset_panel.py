@@ -1,14 +1,53 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from src.dataset_manager import delete_dataset, get_dataset_info, list_datasets, load_dataset, save_dataset
+from src.ingest import read_table_source
+from src.schema import auto_map_columns
 from src.tailored import validate_tailored_settings
 from ui.tailored_panel import current_tailored_settings, initialize_tailored_session
 
 
+def _load_demo_dataset() -> None:
+    data_dir = Path(__file__).resolve().parents[1] / "data"
+    historical_df = read_table_source(data_dir / "sample_data.csv")
+    future_df = read_table_source(data_dir / "future_on_books_sample.csv")
+    events_df = read_table_source(data_dir / "events_sample.csv")
+
+    daily_budget_path = data_dir / "budget_daily_sample.csv"
+    monthly_budget_path = data_dir / "budget_monthly_sample.csv"
+    budget_path = daily_budget_path if daily_budget_path.exists() else monthly_budget_path
+    budget_df = read_table_source(budget_path)
+
+    st.session_state.historical_df = historical_df
+    st.session_state.future_df = future_df
+    st.session_state.events_df = events_df
+    st.session_state.budget_df = budget_df
+    st.session_state.historical_mapping = auto_map_columns(historical_df)
+    st.session_state.future_mapping = auto_map_columns(future_df)
+    st.session_state.use_manual_rooms_available = False
+    st.session_state.manual_rooms_available = None
+    st.session_state.loaded_dataset_name = "Demo Dataset"
+    st.session_state.load_dataset_success = True
+    st.session_state.budget_input_mode = "Upload spreadsheet"
+    st.session_state.demo_dataset_loaded = True
+
+
 def render_dataset_panel() -> None:
     st.header("Datasets")
+
+    if st.button("Load Demo Dataset", key="load_demo_dataset_btn", type="primary", use_container_width=True):
+        try:
+            _load_demo_dataset()
+            st.success("Demo data loaded.")
+        except Exception as exc:
+            st.error(f"Failed to load demo data: {exc}")
+
+    if st.session_state.get("demo_dataset_loaded"):
+        st.info("Demo data loaded. Click Run Pricing Simulation to generate forecasts, budget context, YoY comparison, and pricing recommendations.")
 
     dataset_tab1, dataset_tab2, dataset_tab3 = st.tabs(["Load", "Save", "Manage"])
 
