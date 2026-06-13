@@ -204,19 +204,6 @@ def evaluate_backtest(
     return out
 
 
-def forecast_remaining_month(
-    model_df: pd.DataFrame,
-    as_of_date: pd.Timestamp,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Forecast remaining dates for baseline and enhanced models."""
-    train_df = model_df[model_df["stay_date"] <= as_of_date].copy()
-    target_df = model_df[model_df["stay_date"] > as_of_date].copy()
-
-    baseline_future = baseline_forecast(train_df=train_df, target_df=target_df)
-    enhanced_future = enhanced_forecast(train_df=train_df, target_df=target_df)
-    return baseline_future, enhanced_future
-
-
 def build_future_forecast(
     historical_df: pd.DataFrame,
     future_df: pd.DataFrame,

@@ -269,33 +269,6 @@ def delete_dataset(name: str) -> bool:
         return False
 
 
-def rename_dataset(old_name: str, new_name: str) -> bool:
-    """Rename a saved dataset."""
-    try:
-        old_name = _sanitize_dataset_name(old_name)
-        new_name = _sanitize_dataset_name(new_name)
-        old_dir = DATASETS_DIR / old_name
-        new_dir = DATASETS_DIR / new_name
-        
-        if not old_dir.exists() or not new_name or new_dir.exists():
-            return False
-        
-        # Rename directory
-        old_dir.rename(new_dir)
-        
-        # Update metadata
-        metadata = _load_metadata()
-        if old_name in metadata:
-            metadata[new_name] = metadata.pop(old_name)
-            _save_metadata(metadata)
-        
-        return True
-    
-    except Exception as e:
-        print(f"Error renaming dataset '{old_name}' to '{new_name}': {e}")
-        return False
-
-
 def save_budget_profile(hotel_name: str, budget_df: pd.DataFrame) -> bool:
     """Save a budget profile for a hotel/property."""
     try:
@@ -351,7 +324,3 @@ def list_budget_profiles() -> List[str]:
     return sorted(metadata.keys())
 
 
-def get_budget_profile_info(hotel_name: str) -> Optional[Dict]:
-    """Get metadata for a specific budget profile."""
-    metadata = _load_budget_metadata()
-    return metadata.get(hotel_name)

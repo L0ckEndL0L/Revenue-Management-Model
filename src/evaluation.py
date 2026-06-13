@@ -52,47 +52,6 @@ def calculate_forecast_metrics(actual: pd.Series, predicted: pd.Series) -> Dict[
     }
 
 
-def build_evaluation_table(baseline_metrics: Dict[str, float], enhanced_metrics: Dict[str, float]) -> pd.DataFrame:
-    """Return metrics table comparing baseline and enhanced forecasting."""
-    return pd.DataFrame(
-        [
-            {"scenario": "baseline", **baseline_metrics},
-            {"scenario": "enhanced", **enhanced_metrics},
-        ]
-    )
-
-
-def build_baseline_vs_enhanced_comparison(
-    baseline_metrics: Dict[str, float],
-    enhanced_metrics: Dict[str, float],
-    baseline_projected_revenue: float,
-    enhanced_projected_revenue: float,
-    baseline_budget_variance: float,
-    enhanced_budget_variance: float,
-) -> pd.DataFrame:
-    """Build one-row research comparison output table."""
-    return pd.DataFrame(
-        [
-            {
-                "baseline_mae": baseline_metrics.get("mae", np.nan),
-                "enhanced_mae": enhanced_metrics.get("mae", np.nan),
-                "baseline_rmse": baseline_metrics.get("rmse", np.nan),
-                "enhanced_rmse": enhanced_metrics.get("rmse", np.nan),
-                "baseline_mape": baseline_metrics.get("mape", np.nan),
-                "enhanced_mape": enhanced_metrics.get("mape", np.nan),
-                "baseline_directional_accuracy": baseline_metrics.get("directional_accuracy", np.nan),
-                "enhanced_directional_accuracy": enhanced_metrics.get("directional_accuracy", np.nan),
-                "baseline_projected_revenue": baseline_projected_revenue,
-                "enhanced_projected_revenue": enhanced_projected_revenue,
-                "projected_revenue_difference": enhanced_projected_revenue - baseline_projected_revenue,
-                "baseline_budget_variance": baseline_budget_variance,
-                "enhanced_budget_variance": enhanced_budget_variance,
-                "budget_variance_improvement": abs(baseline_budget_variance) - abs(enhanced_budget_variance),
-            }
-        ]
-    )
-
-
 def plot_forecast_vs_actual(forecast_df: pd.DataFrame, output_path: str) -> None:
     """Plot actual rooms sold against baseline and enhanced predictions."""
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -117,78 +76,6 @@ def plot_forecast_vs_actual(forecast_df: pd.DataFrame, output_path: str) -> None
     plt.title("Forecast vs Actual (Rooms Sold)")
     plt.xlabel("Stay Date")
     plt.ylabel("Rooms Sold")
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-
-
-def plot_budget_vs_forecast(monthly_budget: float, month_end_forecast: float, output_path: str) -> None:
-    """Plot monthly budget against projected month-end forecast."""
-    plt.figure(figsize=(8, 5))
-    labels = ["Budget", "Month-End Forecast"]
-    values = [monthly_budget, month_end_forecast]
-    colors = ["#4c78a8", "#f58518"]
-    plt.bar(labels, values, color=colors)
-    plt.title("Budget vs Month-End Forecast")
-    plt.ylabel("Revenue")
-    plt.tight_layout()
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-
-
-def plot_baseline_vs_enhanced(comparison_df: pd.DataFrame, output_path: str) -> None:
-    """Plot projected revenue comparison for baseline vs enhanced scenarios."""
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    if len(comparison_df) == 0:
-        plt.figure(figsize=(9, 5))
-        plt.title("Baseline vs Enhanced Projected Revenue")
-        plt.text(0.5, 0.5, "No comparison data available", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        return
-
-    row = comparison_df.iloc[0]
-    plt.figure(figsize=(9, 5))
-    labels = ["Baseline", "Enhanced"]
-    values = [row["baseline_projected_revenue"], row["enhanced_projected_revenue"]]
-    colors = ["#72b7b2", "#e45756"]
-    plt.bar(labels, values, color=colors)
-    plt.title("Baseline vs Enhanced Projected Revenue")
-    plt.ylabel("Projected Remaining Revenue")
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-
-
-def plot_required_adr_remaining_trend(rate_plan_df: pd.DataFrame, output_path: str) -> None:
-    """Plot required ADR trend across remaining dates."""
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    if len(rate_plan_df) == 0:
-        plt.figure(figsize=(12, 6))
-        plt.title("Required ADR Remaining Trend")
-        plt.text(0.5, 0.5, "No remaining stay dates in current month", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        return
-
-    chart_df = rate_plan_df.sort_values("stay_date").copy()
-    plt.figure(figsize=(12, 6))
-    plt.plot(chart_df["stay_date"], chart_df["required_adr_track"], label="Required ADR (track)", linewidth=2)
-    if "recommended_adr" in chart_df.columns:
-        plt.plot(chart_df["stay_date"], chart_df["recommended_adr"], label="Recommended ADR", linestyle="--")
-    plt.title("Required ADR Remaining Trend")
-    plt.xlabel("Stay Date")
-    plt.ylabel("ADR")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.xticks(rotation=45)

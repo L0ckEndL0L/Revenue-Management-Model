@@ -166,6 +166,95 @@ def read_excel_with_report_header(file_source) -> pd.DataFrame:
     return clean_report_dataframe(body)
 
 
+def _reset_file_source(file_source) -> None:
+    if hasattr(file_source, "seek"):
+        file_source.seek(0)
+
+
+def read_table_source(file_source, filename: str | None = None) -> pd.DataFrame:
+    """
+    Read CSV or Excel data from a path or file-like source.
+
+    The same report-header and malformed CSV fallbacks are used by both the CLI
+    pipeline and the Streamlit upload preview.
+    """
+    source_name = filename or getattr(file_source, "name", str(file_source))
+    suffix = Path(source_name).suffix.lower()
+
+    if suffix == ".csv":
+        def _try_read_csv(source) -> pd.DataFrame:
+            _reset_file_source(source)
+            local_df = pd.read_csv(source)
+
+            first_col = str(local_df.columns[0]).strip().lower()
+            if first_col in {"start date:", "end date:"}:
+                _reset_file_source(source)
+                raw = pd.read_csv(source, header=None)
+                header_row = None
+                scan_rows = min(20, len(raw))
+                for i in range(scan_rows):
+                    row_values = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
+                    if "date" in row_values and ("room revenue" in row_values or "occupancy %" in row_values):
+                        header_row = i
+                        break
+                if header_row is not None:
+                    _reset_file_source(source)
+                    local_df = pd.read_csv(source, skiprows=header_row)
+
+            return clean_report_dataframe(local_df)
+
+        fallback_errors = []
+        try:
+            df = _try_read_csv(file_source)
+        except (ParserError, UnicodeDecodeError):
+            try:
+                _reset_file_source(file_source)
+                df = pd.read_csv(file_source, sep=None, engine="python")
+            except Exception as e1:
+                fallback_errors.append(str(e1))
+                try:
+                    _reset_file_source(file_source)
+                    df = pd.read_csv(file_source, sep=";", engine="python")
+                except Exception as e2:
+                    fallback_errors.append(str(e2))
+                    try:
+                        _reset_file_source(file_source)
+                        df = pd.read_csv(file_source, sep="\t", engine="python")
+                    except Exception as e3:
+                        fallback_errors.append(str(e3))
+                        try:
+                            _reset_file_source(file_source)
+                            df = pd.read_csv(
+                                file_source,
+                                engine="python",
+                                sep=None,
+                                quoting=csv.QUOTE_NONE,
+                                on_bad_lines="skip",
+                            )
+                            df = clean_report_dataframe(df)
+                            print("[WARNING] CSV contained malformed quote formatting. Some bad rows may have been skipped.")
+                        except Exception as e4:
+                            fallback_errors.append(str(e4))
+                            raise ValueError(
+                                "Error reading CSV file. The file appears malformed (delimiter/quotes/row shape). "
+                                "Try re-exporting as UTF-8 CSV from PMS. "
+                                f"Parser details: {' | '.join(fallback_errors)}"
+                            )
+        except Exception as e:
+            raise ValueError(f"Error reading CSV file: {str(e)}")
+
+        return clean_report_dataframe(df)
+
+    if suffix in [".xlsx", ".xls"]:
+        try:
+            _reset_file_source(file_source)
+            return read_excel_with_report_header(file_source)
+        except Exception as e:
+            raise ValueError(f"Error reading Excel file: {str(e)}")
+
+    raise ValueError(f"Unsupported file format: {suffix}. Please use CSV or Excel files.")
+
+
 def load_file(file_path: str) -> pd.DataFrame:
     """
     Load data from CSV or Excel file.
@@ -184,77 +273,7 @@ def load_file(file_path: str) -> pd.DataFrame:
     if not path.exists():
         raise ValueError(f"File not found: {file_path}")
     
-    file_extension = path.suffix.lower()
-    
-    if file_extension == '.csv':
-        def _try_read_csv(path: str) -> pd.DataFrame:
-            # First pass with normal parser.
-            local_df = pd.read_csv(path)
-
-            # Detect report preamble style where actual header is on a later row.
-            first_col = str(local_df.columns[0]).strip().lower()
-            if first_col in {'start date:', 'end date:'}:
-                raw = pd.read_csv(path, header=None)
-                header_row = None
-                scan_rows = min(20, len(raw))
-                for i in range(scan_rows):
-                    row_values = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
-                    if 'date' in row_values and ('room revenue' in row_values or 'occupancy %' in row_values):
-                        header_row = i
-                        break
-                if header_row is not None:
-                    local_df = pd.read_csv(path, skiprows=header_row)
-
-            return clean_report_dataframe(local_df)
-
-        fallback_errors = []
-        try:
-            df = _try_read_csv(file_path)
-        except (ParserError, UnicodeDecodeError):
-            try:
-                # Fallback 1: infer delimiter with python engine
-                df = pd.read_csv(file_path, sep=None, engine='python')
-            except Exception as e1:
-                fallback_errors.append(str(e1))
-                try:
-                    # Fallback 2: common semicolon-delimited exports
-                    df = pd.read_csv(file_path, sep=';', engine='python')
-                except Exception as e2:
-                    fallback_errors.append(str(e2))
-                    try:
-                        # Fallback 3: common tab-delimited exports
-                        df = pd.read_csv(file_path, sep='\t', engine='python')
-                    except Exception as e3:
-                        fallback_errors.append(str(e3))
-                        try:
-                            # Fallback 4: tolerate broken quote characters and skip bad rows
-                            df = pd.read_csv(
-                                file_path,
-                                engine='python',
-                                sep=None,
-                                quoting=csv.QUOTE_NONE,
-                                on_bad_lines='skip',
-                            )
-                            df = clean_report_dataframe(df)
-                            print("[WARNING] CSV contained malformed quote formatting. Some bad rows may have been skipped.")
-                        except Exception as e4:
-                            fallback_errors.append(str(e4))
-                            raise ValueError(
-                                "Error reading CSV file. The file appears malformed (delimiter/quotes/row shape). "
-                                "Try re-exporting as UTF-8 CSV from PMS. "
-                                f"Parser details: {' | '.join(fallback_errors)}"
-                            )
-        except Exception as e:
-            raise ValueError(f"Error reading CSV file: {str(e)}")
-
-        df = clean_report_dataframe(df)
-    elif file_extension in ['.xlsx', '.xls']:
-        try:
-            df = read_excel_with_report_header(file_path)
-        except Exception as e:
-            raise ValueError(f"Error reading Excel file: {str(e)}")
-    else:
-        raise ValueError(f"Unsupported file format: {file_extension}. Please use CSV or Excel files.")
+    df = read_table_source(file_path, filename=path.name)
     
     if df.empty:
         raise ValueError("The input file is empty.")

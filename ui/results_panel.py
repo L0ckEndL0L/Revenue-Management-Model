@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import io
+import zipfile
+from pathlib import Path
+from typing import Dict
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+from src.yoy import summarize_yoy
+from ui.chart_helpers import interactive_bar_chart, interactive_line_chart, show_chart
+from ui.tailored_panel import format_optional_currency, format_optional_timestamp
+
+
+def build_zip_bytes(output_dir: Path) -> bytes:
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in output_dir.rglob("*"):
+            if file_path.is_file():
+                archive.write(file_path, arcname=file_path.relative_to(output_dir))
+    memory_file.seek(0)
+    return memory_file.read()
+
+
+def safe_read_csv(path_str: str) -> pd.DataFrame | None:
+    path = Path(path_str)
+    if not path.exists():
+        return None
+    return pd.read_csv(path)
+
+
+def build_yoy_outputs(
+    output_paths: Dict[str, str],
+    pipeline_yoy_summary: Dict | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    existing_yoy = safe_read_csv(output_paths.get("yoy_comparison", ""))
+    if existing_yoy is None or len(existing_yoy) == 0:
+        return pd.DataFrame(), dict(pipeline_yoy_summary or {})
+
+    return existing_yoy, dict(pipeline_yoy_summary or summarize_yoy(existing_yoy))
+
+
+def format_yoy_change(value: float | None, prefix: str = "", suffix: str = "%") -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{prefix}{value:+.1f}{suffix}"
+
+
+def format_yoy_pair(current: float | None, prior: float | None, currency: bool = False, decimals: int = 1) -> str:
+    if current is None or pd.isna(current) or prior is None or pd.isna(prior):
+        return "No comparable prior-year data"
+
+    if currency:
+        return f"${current:,.{decimals}f} vs ${prior:,.{decimals}f}"
+    return f"{current:.{decimals}f}% vs {prior:.{decimals}f}%"
+
+
+def render_results(
+    output_paths: Dict[str, str],
+    summary: Dict,
+    use_interactive_charts: bool,
+    timestamp: str,
+) -> None:
+    budget_summary = summary.get("budget_summary", {})
+    forecast_metrics = summary.get("forecast_metrics", {})
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Revenue to date", f"${budget_summary.get('actual_revenue_to_date', 0.0):,.0f}")
+    c2.metric("Month-end forecast", f"${budget_summary.get('month_end_forecast', 0.0):,.0f}")
+    c3.metric("Budget variance", f"${budget_summary.get('variance_to_budget_abs', 0.0):,.0f}")
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Required ADR remaining", f"${budget_summary.get('required_adr_remaining', 0.0):,.2f}")
+    c5.metric("Forecast MAE", f"{forecast_metrics.get('mae', float('nan')):.2f}")
+    c6.metric("Projected uplift", f"${summary.get('projected_uplift_vs_baseline', 0.0):,.0f}")
+    st.caption(
+        "Baseline model rows: "
+        f"{summary.get('baseline_rows', 0)} "
+        f"(unavailable: {summary.get('baseline_unavailable_rows', 0)})"
+    )
+    if summary.get("using_uploaded_comparison", False):
+        st.caption("YoY and baseline comparison are using the two uploaded datasets as the prior-year/current-year pair.")
+
+    tailored_summary = summary.get("tailored_summary", {})
+    st.subheader("Tailored Model")
+    t1, t2, t3 = st.columns(3)
+    t1.metric("Avg final median used", format_optional_currency(tailored_summary.get("avg_final_median_rate_used")))
+    t2.metric("Manual daily median dates", f"{int(tailored_summary.get('manual_daily_median_dates', 0))}")
+    t3.metric("Global fallback dates", f"{int(tailored_summary.get('global_fallback_median_dates', 0))}")
+    st.caption(
+        "Median update frequency: "
+        f"{tailored_summary.get('median_rate_update_frequency', 'Manual only')}"
+        + " | Last update: "
+        + format_optional_timestamp(tailored_summary.get("median_rate_last_updated"))
+    )
+    st.caption(
+        "Daily median sources: "
+        f"dataset-derived={int(tailored_summary.get('dataset_derived_daily_median_dates', 0))}, "
+        f"missing={int(tailored_summary.get('missing_median_dates', 0))}"
+    )
+
+    yoy_df, yoy_summary = build_yoy_outputs(
+        output_paths,
+        summary.get("yoy_summary", {}),
+    )
+    if len(yoy_df) > 0:
+        st.subheader("Year-over-Year (YoY)")
+        y1, y2, y3 = st.columns(3)
+        y1.metric(
+            "Occupancy Change",
+            format_yoy_change(yoy_summary.get("occupancy_change_pct")),
+            format_yoy_pair(
+                yoy_summary.get("avg_current_occupancy_pct"),
+                yoy_summary.get("avg_stly_occupancy_pct"),
+            ),
+        )
+        y2.metric(
+            "ADR Change",
+            format_yoy_change(yoy_summary.get("adr_change_pct")),
+            format_yoy_pair(
+                yoy_summary.get("avg_current_adr"),
+                yoy_summary.get("avg_stly_adr"),
+                currency=True,
+                decimals=2,
+            ),
+        )
+        y3.metric(
+            "Revenue Change",
+            format_yoy_change(yoy_summary.get("revenue_change_pct")),
+            format_yoy_pair(
+                yoy_summary.get("total_current_revenue"),
+                yoy_summary.get("total_stly_revenue"),
+                currency=True,
+                decimals=0,
+            ),
+        )
+        st.caption(
+            "YoY row status: "
+            f"matched={yoy_summary.get('matched_rows', 0)}, "
+            f"missing prior-year={yoy_summary.get('missing_rows', 0)}, "
+            f"incomplete prior-year={yoy_summary.get('incomplete_rows', 0)}"
+        )
+        if not yoy_summary.get("has_comparable_data", False):
+            st.info("No comparable prior-year stay dates were found for this run, so YoY change values are shown as N/A.")
+    else:
+        st.info("YoY data not available for this run. Add comparable STLY files under data/historical to enable YoY.")
+
+    st.subheader("Outputs")
+    tabs = st.tabs([
+        "Forecast",
+        "Baseline",
+        "Tailored Model",
+        "Rate Recommendations",
+        "Top Raise",
+        "Top Rescue",
+        "Top Monitor",
+        "Evaluation",
+        "YoY",
+    ])
+
+    with tabs[0]:
+        df = safe_read_csv(output_paths.get("forecast", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[1]:
+        df = safe_read_csv(output_paths.get("baseline_recommendations", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[2]:
+        tailored_summary_df = safe_read_csv(output_paths.get("tailored_model_summary", ""))
+        tailored_results_df = safe_read_csv(output_paths.get("tailored_model_results", ""))
+        if tailored_summary_df is not None:
+            st.dataframe(tailored_summary_df, use_container_width=True)
+        st.dataframe(tailored_results_df if tailored_results_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[3]:
+        df = safe_read_csv(output_paths.get("rate_recommendations", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[4]:
+        df = safe_read_csv(output_paths.get("top_raise_opportunities", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[5]:
+        df = safe_read_csv(output_paths.get("top_rescue_dates", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[6]:
+        df = safe_read_csv(output_paths.get("top_monitor_dates", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[7]:
+        df = safe_read_csv(output_paths.get("evaluation_metrics", ""))
+        st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[8]:
+        st.dataframe(yoy_df if len(yoy_df) > 0 else pd.DataFrame(), use_container_width=True)
+
+    st.subheader("Charts")
+    run_dir = Path(output_paths["output_dir"])
+    if use_interactive_charts:
+        rate_df = safe_read_csv(output_paths.get("rate_recommendations", ""))
+        priority_df = safe_read_csv(output_paths.get("top_monitor_dates", ""))
+        forecast_vs_actual_df = safe_read_csv(output_paths.get("forecast_vs_actual", ""))
+
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            if rate_df is not None and {"stay_date", "current_rate", "recommended_rate"}.issubset(rate_df.columns):
+                st.altair_chart(
+                    interactive_line_chart(
+                        rate_df,
+                        y_columns=["current_rate", "recommended_rate"],
+                        title="Current vs Recommended Rate",
+                        y_title="Rate",
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                show_chart(run_dir / "current_vs_recommended_rate.png", "Current vs Recommended Rate")
+
+            if priority_df is not None and {"stay_date", "priority_score"}.issubset(priority_df.columns):
+                st.altair_chart(
+                    interactive_line_chart(
+                        priority_df,
+                        y_columns=["priority_score"],
+                        title="Priority Score by Date",
+                        y_title="Priority Score",
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                show_chart(run_dir / "priority_score_by_date.png", "Priority Score by Date")
+
+            if len(yoy_df) > 0 and {"calendar_date", "Current OCC %", "STLY OCC %"}.issubset(yoy_df.columns):
+                yoy_chart_df = yoy_df[["calendar_date", "Current OCC %", "STLY OCC %"]].copy()
+                yoy_melted = yoy_chart_df.melt(
+                    id_vars=["calendar_date"],
+                    value_vars=["Current OCC %", "STLY OCC %"],
+                    var_name="series",
+                    value_name="value",
+                )
+                yoy_chart = (
+                    alt.Chart(yoy_melted)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("calendar_date:N", title="Calendar Date (MM-DD)"),
+                        y=alt.Y("value:Q", title="Occupancy %"),
+                        color=alt.Color("series:N", title="Series"),
+                        tooltip=[
+                            alt.Tooltip("calendar_date:N", title="Calendar Date"),
+                            alt.Tooltip("series:N", title="Series"),
+                            alt.Tooltip("value:Q", title="Occupancy %", format=",.2f"),
+                        ],
+                    )
+                    .properties(title="YoY Occupancy Comparison", height=320)
+                    .interactive()
+                )
+                st.altair_chart(yoy_chart, use_container_width=True)
+
+        with ch2:
+            if rate_df is not None and {"stay_date", "uplift_vs_current"}.issubset(rate_df.columns):
+                st.altair_chart(
+                    interactive_bar_chart(
+                        rate_df,
+                        x_col="stay_date",
+                        y_col="uplift_vs_current",
+                        title="Expected Revenue Uplift",
+                        y_title="Uplift",
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                show_chart(run_dir / "expected_revenue_uplift.png", "Expected Revenue Uplift")
+
+            if forecast_vs_actual_df is not None and {
+                "stay_date",
+                "actual_rooms_sold",
+                "baseline_rooms_sold",
+                "enhanced_rooms_sold",
+            }.issubset(forecast_vs_actual_df.columns):
+                st.altair_chart(
+                    interactive_line_chart(
+                        forecast_vs_actual_df,
+                        y_columns=["actual_rooms_sold", "baseline_rooms_sold", "enhanced_rooms_sold"],
+                        title="Forecast vs Actual (Rooms Sold)",
+                        y_title="Rooms Sold",
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                show_chart(run_dir / "forecast_vs_actual.png", "Forecast vs Actual")
+    else:
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            show_chart(run_dir / "current_vs_recommended_rate.png", "Current vs Recommended Rate")
+            show_chart(run_dir / "priority_score_by_date.png", "Priority Score by Date")
+            if len(yoy_df) > 0:
+                st.info("YoY Occupancy Comparison is available when interactive charts are enabled.")
+        with ch2:
+            show_chart(run_dir / "expected_revenue_uplift.png", "Expected Revenue Uplift")
+            show_chart(run_dir / "forecast_vs_actual.png", "Forecast vs Actual")
+
+    st.subheader("Downloads")
+    for key in [
+        "forecast",
+        "baseline_recommendations",
+        "tailored_model_results",
+        "tailored_model_summary",
+        "rate_recommendations",
+        "top_raise_opportunities",
+        "top_rescue_dates",
+        "top_monitor_dates",
+        "evaluation_metrics",
+        "baseline_vs_new_policy",
+        "yoy_comparison",
+    ]:
+        file_path = output_paths.get(key)
+        if file_path and Path(file_path).exists():
+            st.download_button(
+                f"Download {Path(file_path).name}",
+                data=Path(file_path).read_bytes(),
+                file_name=Path(file_path).name,
+                mime="text/csv",
+                key=f"download_{key}",
+            )
+
+    zip_bytes = build_zip_bytes(Path(output_paths["output_dir"]))
+    st.download_button(
+        "Download all outputs (zip)",
+        data=zip_bytes,
+        file_name=f"hotel_rms_outputs_{timestamp}.zip",
+        mime="application/zip",
+    )
