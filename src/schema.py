@@ -217,12 +217,12 @@ def apply_column_mapping(df: pd.DataFrame, column_mapping: Dict[str, str]) -> pd
     Returns:
         New dataframe with canonical column names
     """
-    # Select and rename columns
-    rename_dict = {v: k for k, v in column_mapping.items()}
-    
-    # Select only the columns that exist in the mapping
-    columns_to_select = list(column_mapping.values())
-    df_mapped = df[columns_to_select].copy()
-    df_mapped.rename(columns=rename_dict, inplace=True)
-    
-    return df_mapped
+    mapped_columns = {}
+    for canonical_col, actual_col in column_mapping.items():
+        if actual_col in df.columns:
+            source = df[actual_col]
+            if isinstance(source, pd.DataFrame):
+                source = source.iloc[:, 0]
+            mapped_columns[canonical_col] = source.reset_index(drop=True)
+
+    return pd.DataFrame(mapped_columns)
