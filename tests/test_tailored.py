@@ -18,6 +18,7 @@ from src.tailored import (
     build_tailored_summary,
     default_tailored_settings,
     infer_median_rate_from_dataset,
+    infer_median_rate_from_comp_set,
     is_median_rate_stale,
     update_daily_median_rates,
     update_median_rate,
@@ -58,6 +59,42 @@ def test_infer_median_rate_from_dataset_returns_date_level_medians() -> None:
     assert len(medians) == 2
     assert round(float(medians.loc[medians["stay_date"] == "2026-07-01", "suggested_dataset_median_rate"].iloc[0]), 2) == 150.0
     assert round(float(medians.loc[medians["stay_date"] == "2026-07-02", "suggested_dataset_median_rate"].iloc[0]), 2) == 130.0
+
+
+def test_infer_median_rate_from_comp_set_returns_date_level_medians() -> None:
+    comp_set_df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2026-07-01", "2026-07-01", "2026-07-02"]),
+            "competitor_name": ["Comp A", "Comp B", "Comp A"],
+            "rate": [170.0, 190.0, 150.0],
+        }
+    )
+
+    medians = infer_median_rate_from_comp_set(comp_set_df)
+
+    assert round(float(medians.loc[medians["stay_date"] == "2026-07-01", "suggested_dataset_median_rate"].iloc[0]), 2) == 180.0
+    assert round(float(medians.loc[medians["stay_date"] == "2026-07-02", "suggested_dataset_median_rate"].iloc[0]), 2) == 150.0
+
+
+def test_comp_set_medians_take_priority_over_future_rate_in_daily_table() -> None:
+    comp_set_df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2026-07-01", "2026-07-01"]),
+            "competitor_name": ["Comp A", "Comp B"],
+            "rate": [170.0, 190.0],
+        }
+    )
+
+    table = build_daily_median_rate_table(
+        _sample_future_df(),
+        default_tailored_settings(),
+        baseline_df=_sample_baseline_df(),
+        comp_set_df=comp_set_df,
+    )
+    july_1 = table.loc[table["stay_date"] == "2026-07-01"].iloc[0]
+
+    assert july_1["suggested_dataset_median_rate"] == 180.0
+    assert july_1["median_rate_source"] == DATASET_DERIVED_SOURCE
 
 
 def test_manual_daily_median_overrides_dataset_derived_by_date() -> None:
@@ -148,6 +185,114 @@ def test_daily_comp_rate_mode_can_override_monthly_rate_by_date() -> None:
 
     assert july_1["median_rate_source"] == MANUAL_DAILY_SOURCE
     assert july_1["final_median_rate_used"] == 180.0
+
+
+def test_segment_focus_changes_tailored_recommendation_posture() -> None:
+    base_settings = default_tailored_settings()
+    base_settings.update(
+        {
+            "global_median_rate_fallback": 145.0,
+            "maximum_recommended_rate": 300.0,
+        }
+    )
+
+    balanced_settings = {**base_settings, "segment_focus": "Balanced"}
+    premium_settings = {**base_settings, "segment_focus": "Premium"}
+    group_settings = {**base_settings, "segment_focus": "Group"}
+
+    balanced = build_tailored_recommendations(_sample_future_df(), _sample_baseline_df(), balanced_settings)
+    premium = build_tailored_recommendations(_sample_future_df(), _sample_baseline_df(), premium_settings)
+    group = build_tailored_recommendations(_sample_future_df(), _sample_baseline_df(), group_settings)
+
+    assert premium["tailored_recommendation"].mean() > balanced["tailored_recommendation"].mean()
+    assert group["tailored_recommendation"].mean() < balanced["tailored_recommendation"].mean()
+    assert "premium posture" in premium.loc[0, "reasoning_notes"]
+    assert "group-focused posture" in group.loc[0, "reasoning_notes"]
+
+
+def test_revenue_segment_prices_above_occupancy_segment() -> None:
+    base_settings = default_tailored_settings()
+    base_settings.update(
+        {
+            "global_median_rate_fallback": 145.0,
+            "maximum_recommended_rate": 300.0,
+        }
+    )
+
+    revenue = build_tailored_recommendations(
+        _sample_future_df(),
+        _sample_baseline_df(),
+        {**base_settings, "segment_focus": "Revenue"},
+    )
+    occupancy = build_tailored_recommendations(
+        _sample_future_df(),
+        _sample_baseline_df(),
+        {**base_settings, "segment_focus": "Occupancy"},
+    )
+
+    assert revenue["tailored_recommendation"].mean() > occupancy["tailored_recommendation"].mean()
+
+
+def test_property_type_changes_tailored_recommendation_posture() -> None:
+    base_settings = default_tailored_settings()
+    base_settings.update(
+        {
+            "global_median_rate_fallback": 145.0,
+            "maximum_recommended_rate": 300.0,
+            "segment_focus": "Balanced",
+        }
+    )
+
+    full_service = build_tailored_recommendations(
+        _sample_future_df(),
+        _sample_baseline_df(),
+        {**base_settings, "property_type": "Full Service"},
+    )
+    luxury = build_tailored_recommendations(
+        _sample_future_df(),
+        _sample_baseline_df(),
+        {**base_settings, "property_type": "Luxury"},
+    )
+    economy = build_tailored_recommendations(
+        _sample_future_df(),
+        _sample_baseline_df(),
+        {**base_settings, "property_type": "Economy"},
+    )
+
+    assert luxury["tailored_recommendation"].mean() > full_service["tailored_recommendation"].mean()
+    assert economy["tailored_recommendation"].mean() < full_service["tailored_recommendation"].mean()
+    assert "luxury posture" in luxury.loc[0, "reasoning_notes"]
+    assert "economy posture" in economy.loc[0, "reasoning_notes"]
+
+
+def test_resort_property_reacts_more_to_event_demand_than_extended_stay() -> None:
+    future_df = _sample_future_df().copy()
+    future_df["impact_level"] = ["high", "high", "high", "high"]
+    future_df["event_pct"] = [0.08, 0.08, 0.08, 0.08]
+
+    base_settings = default_tailored_settings()
+    base_settings.update(
+        {
+            "global_median_rate_fallback": 145.0,
+            "maximum_recommended_rate": 300.0,
+            "segment_focus": "Balanced",
+        }
+    )
+
+    resort = build_tailored_recommendations(
+        future_df,
+        _sample_baseline_df(),
+        {**base_settings, "property_type": "Resort"},
+    )
+    extended_stay = build_tailored_recommendations(
+        future_df,
+        _sample_baseline_df(),
+        {**base_settings, "property_type": "Extended Stay"},
+    )
+
+    assert resort["tailored_recommendation"].mean() > extended_stay["tailored_recommendation"].mean()
+    assert "resort posture" in resort.loc[0, "reasoning_notes"]
+    assert "extended-stay posture" in extended_stay.loc[0, "reasoning_notes"]
 
 
 def test_global_fallback_is_used_only_when_no_daily_median_exists() -> None:

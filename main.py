@@ -269,6 +269,7 @@ def run_pipeline(
         budget_summary=budget_summary,
         tailored_settings=config.get("tailored_settings"),
         target_occ=float(config.get("target_occ", 0.80)),
+        comp_set_df=config.get("comp_set_df"),
     )
 
     (

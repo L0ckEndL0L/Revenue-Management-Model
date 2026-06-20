@@ -36,6 +36,148 @@ DAILY_MEDIAN_COLUMNS = [
     "last_median_update_timestamp",
 ]
 
+SEGMENT_FOCUS_PRESETS = {
+    "balanced": {
+        "demand_bias": 0.00,
+        "strategy_bias": 0.00,
+        "anchor_bias": 0.00,
+        "rate_bias": 0.00,
+        "movement_multiplier": 1.00,
+        "description": "balanced rate and occupancy posture",
+    },
+    "revenue": {
+        "demand_bias": 0.02,
+        "strategy_bias": 0.14,
+        "anchor_bias": 0.08,
+        "rate_bias": 0.012,
+        "movement_multiplier": 1.10,
+        "description": "revenue-focused posture with stronger rate confidence",
+    },
+    "occupancy": {
+        "demand_bias": -0.03,
+        "strategy_bias": -0.20,
+        "anchor_bias": -0.06,
+        "rate_bias": -0.014,
+        "movement_multiplier": 0.90,
+        "description": "occupancy-focused posture that protects volume",
+    },
+    "corporate": {
+        "demand_bias": 0.01,
+        "strategy_bias": 0.04,
+        "anchor_bias": -0.08,
+        "rate_bias": -0.004,
+        "movement_multiplier": 0.70,
+        "description": "corporate posture with steadier, less volatile rate movement",
+    },
+    "group": {
+        "demand_bias": -0.04,
+        "strategy_bias": -0.24,
+        "anchor_bias": -0.12,
+        "rate_bias": -0.020,
+        "movement_multiplier": 0.80,
+        "description": "group-focused posture that favors volume and conversion",
+    },
+    "premium": {
+        "demand_bias": 0.05,
+        "strategy_bias": 0.22,
+        "anchor_bias": 0.14,
+        "rate_bias": 0.020,
+        "movement_multiplier": 1.15,
+        "description": "premium posture with stronger comp-rate anchoring and rate lift",
+    },
+    "leisure": {
+        "demand_bias": 0.015,
+        "strategy_bias": 0.05,
+        "anchor_bias": 0.04,
+        "rate_bias": 0.006,
+        "movement_multiplier": 1.05,
+        "description": "leisure posture that leans into seasonal and event demand",
+    },
+}
+
+PROPERTY_TYPE_PRESETS = {
+    "full service": {
+        "demand_bias": 0.01,
+        "strategy_bias": 0.04,
+        "anchor_bias": 0.02,
+        "rate_bias": 0.004,
+        "seasonality_multiplier": 1.00,
+        "event_multiplier": 1.00,
+        "movement_multiplier": 1.00,
+        "description": "full-service posture with mild revenue confidence",
+    },
+    "limited service": {
+        "demand_bias": -0.015,
+        "strategy_bias": -0.08,
+        "anchor_bias": -0.04,
+        "rate_bias": -0.006,
+        "seasonality_multiplier": 0.90,
+        "event_multiplier": 0.85,
+        "movement_multiplier": 0.90,
+        "description": "limited-service posture that keeps rates practical and occupancy-aware",
+    },
+    "select service": {
+        "demand_bias": -0.01,
+        "strategy_bias": -0.04,
+        "anchor_bias": -0.02,
+        "rate_bias": -0.004,
+        "seasonality_multiplier": 0.95,
+        "event_multiplier": 0.90,
+        "movement_multiplier": 0.95,
+        "description": "select-service posture with restrained rate movement",
+    },
+    "luxury": {
+        "demand_bias": 0.05,
+        "strategy_bias": 0.18,
+        "anchor_bias": 0.16,
+        "rate_bias": 0.018,
+        "seasonality_multiplier": 1.05,
+        "event_multiplier": 1.10,
+        "movement_multiplier": 1.10,
+        "description": "luxury posture with stronger comp-rate anchoring and rate confidence",
+    },
+    "resort": {
+        "demand_bias": 0.035,
+        "strategy_bias": 0.10,
+        "anchor_bias": 0.08,
+        "rate_bias": 0.012,
+        "seasonality_multiplier": 1.25,
+        "event_multiplier": 1.20,
+        "movement_multiplier": 1.08,
+        "description": "resort posture that leans into seasonality and event compression",
+    },
+    "boutique": {
+        "demand_bias": 0.025,
+        "strategy_bias": 0.10,
+        "anchor_bias": 0.10,
+        "rate_bias": 0.010,
+        "seasonality_multiplier": 1.05,
+        "event_multiplier": 1.05,
+        "movement_multiplier": 1.05,
+        "description": "boutique posture with premium positioning and comp-set influence",
+    },
+    "extended stay": {
+        "demand_bias": -0.015,
+        "strategy_bias": -0.10,
+        "anchor_bias": -0.10,
+        "rate_bias": -0.006,
+        "seasonality_multiplier": 0.75,
+        "event_multiplier": 0.70,
+        "movement_multiplier": 0.65,
+        "description": "extended-stay posture with slower, steadier rate movement",
+    },
+    "economy": {
+        "demand_bias": -0.035,
+        "strategy_bias": -0.18,
+        "anchor_bias": -0.08,
+        "rate_bias": -0.014,
+        "seasonality_multiplier": 0.85,
+        "event_multiplier": 0.80,
+        "movement_multiplier": 0.85,
+        "description": "economy posture that protects conversion and price sensitivity",
+    },
+}
+
 
 @dataclass
 class TailoredModelSettings:
@@ -391,10 +533,38 @@ def infer_median_rate_from_dataset(df: pd.DataFrame, baseline_df: pd.DataFrame |
     return result
 
 
+def infer_median_rate_from_comp_set(comp_set_df: pd.DataFrame | None) -> pd.DataFrame:
+    """Infer date-level median comp rates from normalized rate-shop rows."""
+    if comp_set_df is None or len(comp_set_df) == 0:
+        return pd.DataFrame(columns=["stay_date", "suggested_dataset_median_rate"])
+
+    required = {"stay_date", "rate"}
+    if not required.issubset(set(comp_set_df.columns)):
+        return pd.DataFrame(columns=["stay_date", "suggested_dataset_median_rate"])
+
+    comp = comp_set_df.copy()
+    comp["stay_date"] = pd.to_datetime(comp["stay_date"], errors="coerce")
+    comp["rate"] = pd.to_numeric(comp["rate"], errors="coerce")
+    comp = comp.dropna(subset=["stay_date", "rate"])
+    comp = comp[comp["rate"] > 0]
+    if len(comp) == 0:
+        return pd.DataFrame(columns=["stay_date", "suggested_dataset_median_rate"])
+
+    return (
+        comp.groupby(comp["stay_date"].dt.normalize())["rate"]
+        .median()
+        .reset_index()
+        .rename(columns={"rate": "suggested_dataset_median_rate"})
+        .sort_values("stay_date")
+        .reset_index(drop=True)
+    )
+
+
 def build_daily_median_rate_table(
     future_df: pd.DataFrame,
     settings: dict[str, Any] | None = None,
     baseline_df: pd.DataFrame | None = None,
+    comp_set_df: pd.DataFrame | None = None,
     reference_time: datetime | None = None,
 ) -> pd.DataFrame:
     """Create a date-level median table for the UI and recommendation logic."""
@@ -408,7 +578,9 @@ def build_daily_median_rate_table(
 
     forecast_dates = pd.DataFrame({"stay_date": pd.to_datetime(future_df["stay_date"], errors="coerce")})
     forecast_dates = forecast_dates.dropna(subset=["stay_date"]).drop_duplicates().sort_values("stay_date").reset_index(drop=True)
-    suggested = infer_median_rate_from_dataset(future_df, baseline_df=baseline_df)
+    suggested = infer_median_rate_from_comp_set(comp_set_df)
+    if len(suggested) == 0:
+        suggested = infer_median_rate_from_dataset(future_df, baseline_df=baseline_df)
     use_daily_comp_rates = validated_settings.get("comp_rate_input_mode") == DAILY_COMP_RATE_MODE
     manual_lookup = pd.DataFrame(validated_settings.get("daily_median_rates", []) if use_daily_comp_rates else [])
     if len(manual_lookup) > 0:
@@ -460,24 +632,14 @@ def build_daily_median_rate_table(
     return table[DAILY_MEDIAN_COLUMNS].sort_values("stay_date").reset_index(drop=True)
 
 
-def _property_type_bias(property_type: str, segment_focus: str) -> float:
-    property_bias_map = {
-        "luxury": 0.03,
-        "resort": 0.02,
-        "boutique": 0.015,
-        "full service": 0.01,
-        "limited service": -0.015,
-        "select service": -0.01,
-        "extended stay": -0.01,
-    }
-    bias = property_bias_map.get(str(property_type).strip().lower(), 0.0)
+def _property_type_preset(property_type: str) -> dict[str, float | str]:
+    property_key = str(property_type).strip().lower()
+    return PROPERTY_TYPE_PRESETS.get(property_key, PROPERTY_TYPE_PRESETS["full service"])
 
+
+def _segment_focus_preset(segment_focus: str) -> dict[str, float | str]:
     segment = str(segment_focus).strip().lower()
-    if "premium" in segment or "luxury" in segment or "corporate" in segment:
-        bias += 0.01
-    if "group" in segment or "volume" in segment or "crew" in segment:
-        bias -= 0.01
-    return bias
+    return SEGMENT_FOCUS_PRESETS.get(segment, SEGMENT_FOCUS_PRESETS["balanced"])
 
 
 def _seasonality_index(stay_date: pd.Timestamp) -> float:
@@ -514,6 +676,7 @@ def build_tailored_recommendations(
     future_df: pd.DataFrame,
     baseline_df: pd.DataFrame,
     settings: dict[str, Any] | None = None,
+    comp_set_df: pd.DataFrame | None = None,
     reference_time: datetime | None = None,
 ) -> pd.DataFrame:
     """Adjust baseline recommendations using property-specific tailored settings."""
@@ -571,14 +734,13 @@ def build_tailored_recommendations(
         merged,
         validated_settings,
         baseline_df=baseline_df,
+        comp_set_df=comp_set_df,
         reference_time=reference_time,
     )
     merged = merged.merge(daily_median_table, on="stay_date", how="left")
 
-    property_bias = _property_type_bias(
-        str(validated_settings["property_type"]),
-        str(validated_settings["segment_focus"]),
-    )
+    property_preset = _property_type_preset(str(validated_settings["property_type"]))
+    segment_preset = _segment_focus_preset(str(validated_settings["segment_focus"]))
     global_stale = is_median_rate_stale(validated_settings, reference_time=reference_time)
 
     rows: list[dict[str, Any]] = []
@@ -630,9 +792,10 @@ def build_tailored_recommendations(
             demand_index = (
                 (occupancy_value - 0.72) * 0.80 * validated_settings["baseline_occupancy_sensitivity"]
                 + pace_variance * 0.60 * validated_settings["demand_adjustment_factor"]
-                + _seasonality_index(stay_date) * 0.40 * validated_settings["seasonality_adjustment_factor"]
-                + _event_index(event_pct, impact_level) * 0.45 * validated_settings["event_impact_factor"]
-                + property_bias
+                + _seasonality_index(stay_date) * 0.40 * validated_settings["seasonality_adjustment_factor"] * float(property_preset["seasonality_multiplier"])
+                + _event_index(event_pct, impact_level) * 0.45 * validated_settings["event_impact_factor"] * float(property_preset["event_multiplier"])
+                + float(property_preset["demand_bias"])
+                + float(segment_preset["demand_bias"])
             )
             demand_index = float(np.clip(demand_index, -0.50, 0.60))
 
@@ -640,18 +803,33 @@ def build_tailored_recommendations(
                 (validated_settings["revenue_priority"] - 1.0) * 0.55
                 + (validated_settings["revpar_priority"] - 1.0) * 0.35
                 - (validated_settings["rooms_sold_priority"] - 1.0) * 0.45
+                + float(property_preset["strategy_bias"])
+                + float(segment_preset["strategy_bias"])
             )
             strategy_index = float(np.clip(strategy_index, -0.35, 0.35))
 
             if pd.notna(median_rate_used) and median_rate_used > 0:
-                anchor_weight = float(np.clip(0.45 + strategy_index * 0.25 + demand_index * 0.30, 0.20, 0.90))
+                anchor_weight = float(np.clip(
+                    0.45
+                    + strategy_index * 0.25
+                    + demand_index * 0.30
+                    + float(property_preset["anchor_bias"])
+                    + float(segment_preset["anchor_bias"]),
+                    0.15,
+                    0.95,
+                ))
                 anchored_rate = baseline_rate + (median_rate_used - baseline_rate) * anchor_weight
                 if abs(baseline_rate - median_rate_used) / median_rate_used > 0.20:
                     warnings.append("Baseline recommendation is materially different from the selected median rate")
             else:
                 anchored_rate = baseline_rate
 
-            adjustment_pct = demand_index * 0.12 + strategy_index * 0.05
+            adjustment_pct = (
+                demand_index * 0.12
+                + strategy_index * 0.05
+                + float(property_preset["rate_bias"])
+                + float(segment_preset["rate_bias"])
+            ) * float(property_preset["movement_multiplier"]) * float(segment_preset["movement_multiplier"])
             tailored_rate = anchored_rate * (1.0 + adjustment_pct)
 
             if pd.notna(occupancy) and occupancy >= 0.90 and pd.notna(median_rate_used):
@@ -677,6 +855,8 @@ def build_tailored_recommendations(
                 f"Baseline rate started at ${baseline_rate:,.2f}.",
                 f"Demand index {demand_index:+.2f} reflects occupancy, pace, seasonality, and event context.",
                 f"Strategy index {strategy_index:+.2f} reflects RevPAR, rooms sold, and revenue priorities.",
+                f"Property type applied a {property_preset['description']}.",
+                f"Segment focus applied a {segment_preset['description']}.",
                 f"Median source for this date: {median_rate_source.lower()}.",
             ]
             if pd.notna(median_rate_used):

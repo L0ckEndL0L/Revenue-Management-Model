@@ -21,6 +21,7 @@ DEMO_OPTIONAL_FILES = {
     "events": "events_sample.csv",
     "daily_budget": "budget_daily_sample.csv",
     "monthly_budget": "budget_monthly_sample.csv",
+    "comp_set": "comp_set_sample.csv",
 }
 
 
@@ -54,6 +55,7 @@ def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
     historical_df = read_table_source(_demo_file_path(DEMO_REQUIRED_FILES["historical"]))
     future_df = read_table_source(_demo_file_path(DEMO_REQUIRED_FILES["future"]))
     events_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["events"], warnings)
+    comp_set_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["comp_set"], warnings)
 
     budget_df = None
     daily_budget_path = _demo_file_path(DEMO_OPTIONAL_FILES["daily_budget"])
@@ -70,6 +72,7 @@ def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
         "historical_df": historical_df,
         "future_df": future_df,
         "events_df": events_df,
+        "comp_set_df": comp_set_df,
         "budget_df": budget_df,
         "historical_mapping": auto_map_columns(historical_df),
         "future_mapping": auto_map_columns(future_df),
@@ -82,6 +85,7 @@ def _load_demo_dataset() -> list[str]:
     st.session_state.historical_df = payload["historical_df"]
     st.session_state.future_df = payload["future_df"]
     st.session_state.events_df = payload["events_df"]
+    st.session_state.comp_set_df = payload["comp_set_df"]
     st.session_state.budget_df = payload["budget_df"]
     st.session_state.historical_mapping = payload["historical_mapping"]
     st.session_state.future_mapping = payload["future_mapping"]
@@ -95,9 +99,94 @@ def _load_demo_dataset() -> list[str]:
     return warnings
 
 
+def _apply_loaded_dataset(
+    dataset_name: str,
+    hist_df,
+    fut_df,
+    events_df,
+    comp_set_df,
+    budget_df,
+    hist_map,
+    fut_map,
+    use_manual_rooms,
+    manual_rooms,
+    tailored_settings,
+) -> None:
+    st.session_state.loaded_dataset_name = dataset_name
+    st.session_state.historical_df = hist_df
+    st.session_state.future_df = fut_df
+    st.session_state.events_df = events_df
+    st.session_state.comp_set_df = comp_set_df
+    st.session_state.budget_df = budget_df
+    st.session_state.historical_mapping = hist_map
+    st.session_state.future_mapping = fut_map
+    st.session_state.use_manual_rooms_available = use_manual_rooms
+    st.session_state.manual_rooms_available = manual_rooms
+    st.session_state.demo_dataset_loaded = False
+    initialize_tailored_session(tailored_settings)
+    st.session_state.load_dataset_success = True
+
+
+def _load_saved_dataset(dataset_name: str) -> bool:
+    (
+        hist_df,
+        fut_df,
+        events_df,
+        comp_set_df,
+        budget_df,
+        hist_map,
+        fut_map,
+        use_manual_rooms,
+        manual_rooms,
+        tailored_settings,
+    ) = load_dataset(dataset_name)
+    if hist_df is None or fut_df is None:
+        return False
+
+    _apply_loaded_dataset(
+        dataset_name,
+        hist_df,
+        fut_df,
+        events_df,
+        comp_set_df,
+        budget_df,
+        hist_map,
+        fut_map,
+        use_manual_rooms,
+        manual_rooms,
+        tailored_settings,
+    )
+    return True
+
+
+def _render_property_switcher(saved_datasets: list[str]) -> None:
+    switcher_options = ["RateAnchor Demo Dataset"] + saved_datasets
+    selected_property = st.selectbox(
+        "Active property / dataset",
+        options=switcher_options,
+        key="active_property_dataset_select",
+        help="Switch between the included demo property and any saved property datasets.",
+    )
+
+    if st.button("Switch Property", key="switch_property_dataset_btn", use_container_width=True):
+        try:
+            if selected_property == "RateAnchor Demo Dataset":
+                warnings = _load_demo_dataset()
+                st.success("RateAnchor demo property loaded.")
+                for warning in warnings:
+                    st.warning(warning)
+            elif _load_saved_dataset(selected_property):
+                st.success(f"Loaded property dataset: {selected_property}")
+            else:
+                st.error("Failed to load the selected property dataset.")
+        except Exception as exc:
+            st.error(f"Failed to switch property dataset: {exc}")
+
+
 def render_dataset_panel() -> None:
     st.header("Demo and Datasets")
     st.caption("Use the built-in RateAnchor demo for advisor review, or load saved/uploaded hotel files.")
+    saved_datasets = list_datasets()
 
     if st.button("Load Demo Dataset", key="load_demo_dataset_btn", type="primary", use_container_width=True):
         try:
@@ -111,11 +200,13 @@ def render_dataset_panel() -> None:
     if st.session_state.get("demo_dataset_loaded"):
         st.info("Demo mode is active. Run the simulation to generate forecast, baseline, tailored, YoY, budget, and event-aware outputs.")
 
+    st.subheader("Property Switcher")
+    _render_property_switcher(saved_datasets)
+
     dataset_tab1, dataset_tab2, dataset_tab3 = st.tabs(["Load", "Save", "Manage"])
 
     with dataset_tab1:
         st.subheader("Load Dataset")
-        saved_datasets = list_datasets()
         if saved_datasets:
             selected_dataset = st.selectbox(
                 "Select saved dataset",
@@ -124,20 +215,7 @@ def render_dataset_panel() -> None:
             )
 
             if st.button("Load Dataset", key="load_dataset_btn"):
-                hist_df, fut_df, events_df, budget_df, hist_map, fut_map, use_manual_rooms, manual_rooms, tailored_settings = load_dataset(selected_dataset)
-                if hist_df is not None and fut_df is not None:
-                    st.session_state.loaded_dataset_name = selected_dataset
-                    st.session_state.historical_df = hist_df
-                    st.session_state.future_df = fut_df
-                    st.session_state.events_df = events_df
-                    st.session_state.budget_df = budget_df
-                    st.session_state.historical_mapping = hist_map
-                    st.session_state.future_mapping = fut_map
-                    st.session_state.use_manual_rooms_available = use_manual_rooms
-                    st.session_state.manual_rooms_available = manual_rooms
-                    initialize_tailored_session(tailored_settings)
-                    st.session_state.load_dataset_success = True
-                else:
+                if not _load_saved_dataset(selected_dataset):
                     st.error("Failed to load dataset")
 
             if "load_dataset_success" in st.session_state and st.session_state.load_dataset_success:
@@ -168,6 +246,7 @@ def render_dataset_panel() -> None:
                         historical_df=st.session_state.historical_df,
                         future_df=st.session_state.future_df,
                         events_df=st.session_state.get("events_df"),
+                        comp_set_df=st.session_state.get("comp_set_df"),
                         budget_df=st.session_state.get("budget_df"),
                         historical_mapping=st.session_state.get("historical_mapping"),
                         future_mapping=st.session_state.get("future_mapping"),
@@ -217,6 +296,8 @@ def render_dataset_panel() -> None:
                     st.caption(f"Rows: {info.get('rows_historical', 0)} historical / {info.get('rows_future', 0)} future")
                     if info.get("has_events"):
                         st.caption("Has events data")
+                    if info.get("has_comp_set"):
+                        st.caption("Has comp-set data")
                     if info.get("has_budget"):
                         st.caption("Has budget data")
                     if info.get("has_tailored_settings"):

@@ -40,6 +40,18 @@ def _future_df() -> pd.DataFrame:
     )
 
 
+def _comp_set_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2026-07-01", "2026-07-01", "2026-07-02", "2026-07-02"]),
+            "competitor_name": ["Comp A", "Comp B", "Comp A", "Comp B"],
+            "rate": [170.0, 180.0, 150.0, 160.0],
+            "source": ["Mock", "Mock", "Mock", "Mock"],
+            "shop_timestamp": ["2026-06-06 09:00"] * 4,
+        }
+    )
+
+
 def test_save_and_load_dataset_preserves_daily_median_settings(tmp_path, monkeypatch) -> None:
     datasets_dir = tmp_path / "datasets"
     metadata_file = datasets_dir / "datasets_metadata.json"
@@ -70,15 +82,20 @@ def test_save_and_load_dataset_preserves_daily_median_settings(tmp_path, monkeyp
         name="Tailored Dataset",
         historical_df=_historical_df(),
         future_df=_future_df(),
+        comp_set_df=_comp_set_df(),
         tailored_settings=tailored_settings,
     )
 
     assert saved is True
 
     loaded = dataset_manager.load_dataset("Tailored Dataset")
+    loaded_comp_set_df = loaded[3]
     loaded_tailored_settings = loaded[-1]
     dataset_info = dataset_manager.get_dataset_info("Tailored Dataset")
 
+    assert loaded_comp_set_df is not None
+    assert len(loaded_comp_set_df) == 4
+    assert dataset_info["has_comp_set"] is True
     assert loaded_tailored_settings["global_median_rate_fallback"] == 155.0
     assert loaded_tailored_settings["daily_median_rates"][0]["manual_daily_median_rate"] == 165.0
     assert loaded_tailored_settings["daily_median_rates"][0]["stay_date"] == "2026-07-01"
@@ -114,6 +131,7 @@ def test_run_pipeline_creates_date_level_tailored_exports(tmp_path) -> None:
                     }
                 ],
             },
+            "comp_set_df": _comp_set_df(),
         },
     )
 
@@ -151,4 +169,6 @@ def test_run_pipeline_creates_date_level_tailored_exports(tmp_path) -> None:
         "avg_tailored_recommendation",
         "avg_difference_from_median",
     }.issubset(tailored_summary.columns)
+    july_2 = tailored_results.loc[tailored_results["stay_date"] == "2026-07-02"].iloc[0]
+    assert july_2["suggested_dataset_median_rate"] == 155.0
     assert "tailored_summary" in summary

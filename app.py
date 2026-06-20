@@ -220,6 +220,7 @@ def _run_dashboard() -> None:
                     "default_current_rate": float(pricing_config["default_current_rate"]),
                     "manual_rooms_available": pricing_config["manual_rooms_available"],
                     "tailored_settings": tailored_settings,
+                    "comp_set_df": st.session_state.get("comp_set_df"),
                 },
             )
             status.update(label="Simulation complete", state="complete")

@@ -6,6 +6,7 @@ from typing import Dict
 import pandas as pd
 import streamlit as st
 
+from src.ingest import read_table_source
 from src.tailored import (
     ALLOWED_UPDATE_FREQUENCIES,
     DAILY_COMP_RATE_MODE,
@@ -137,6 +138,10 @@ def render_tailored_sidebar() -> None:
         index=property_options.index(current_property_type),
         key=tailored_state_key("property_type"),
     )
+    st.caption(
+        "Property type changes the operating posture: luxury and boutique lean premium, resort responds more to seasonality/events, "
+        "extended stay dampens volatility, and economy/limited service protect conversion."
+    )
 
     current_segment_focus = str(st.session_state.get(tailored_state_key("segment_focus"), TAILORED_SEGMENT_OPTIONS[0]))
     segment_options = TAILORED_SEGMENT_OPTIONS if current_segment_focus in TAILORED_SEGMENT_OPTIONS else [current_segment_focus, *TAILORED_SEGMENT_OPTIONS]
@@ -145,6 +150,10 @@ def render_tailored_sidebar() -> None:
         options=segment_options,
         index=segment_options.index(current_segment_focus),
         key=tailored_state_key("segment_focus"),
+    )
+    st.caption(
+        "Segment focus now changes the tailored model posture: revenue and premium lean more rate-confident, "
+        "occupancy and group protect volume, corporate dampens volatility, and leisure leans into seasonal/event demand."
     )
 
     tc1, tc2 = st.columns(2)
@@ -178,6 +187,27 @@ def render_comp_rate_controls(tailored_future_preview: pd.DataFrame) -> None:
         horizontal=True,
         key=tailored_state_key("comp_rate_input_mode"),
     )
+
+    comp_set_file = st.file_uploader(
+        "Optional comp-set rate shop (CSV/XLSX)",
+        type=["csv", "xlsx", "xls"],
+        key="comp_set_upload_file",
+    )
+    if comp_set_file is not None:
+        try:
+            st.session_state.comp_set_df = read_table_source(comp_set_file, filename=comp_set_file.name)
+            st.success(f"Loaded comp-set rows: {len(st.session_state.comp_set_df)}")
+        except Exception as exc:
+            st.error(f"Failed to load comp-set file: {exc}")
+
+    comp_set_df = st.session_state.get("comp_set_df")
+    if comp_set_df is not None and len(comp_set_df) > 0:
+        with st.expander("Active comp-set preview", expanded=False):
+            st.dataframe(comp_set_df.head(40), use_container_width=True)
+        if {"stay_date", "rate"}.issubset(set(comp_set_df.columns)):
+            st.caption("Comp-set medians from this table will be used as the suggested daily comp rates.")
+        else:
+            st.warning("Comp-set data needs stay_date and rate columns to drive suggested daily comp rates.")
 
     st.text_input(
         "Monthly comp-set median rate",
@@ -224,12 +254,12 @@ def render_comp_rate_controls(tailored_future_preview: pd.DataFrame) -> None:
                     st.rerun()
 
     if st.session_state.get(tailored_state_key("comp_rate_input_mode"), DAILY_COMP_RATE_MODE) == DAILY_COMP_RATE_MODE:
-        render_daily_median_editor(tailored_future_preview)
+        render_daily_median_editor(tailored_future_preview, comp_set_df=comp_set_df)
     else:
         st.info("Daily comp-rate editing is off. The monthly comp-set median rate will be used for each forecast date.")
 
 
-def render_daily_median_editor(tailored_future_preview: pd.DataFrame) -> None:
+def render_daily_median_editor(tailored_future_preview: pd.DataFrame, comp_set_df: pd.DataFrame | None = None) -> None:
     if len(tailored_future_preview) == 0:
         st.info("Load demo data or upload a future on-books report to edit daily comp rates.")
         return
@@ -240,6 +270,7 @@ def render_daily_median_editor(tailored_future_preview: pd.DataFrame) -> None:
     daily_median_df = build_daily_median_rate_table(
         tailored_future_preview,
         current_tailored_settings(),
+        comp_set_df=comp_set_df,
     )
     daily_median_editor_df = daily_median_df.copy()
     if "stay_date" in daily_median_editor_df.columns:

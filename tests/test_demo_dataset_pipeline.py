@@ -35,6 +35,8 @@ def test_demo_payload_uses_project_relative_required_files() -> None:
 
     assert len(payload["historical_df"]) > 0
     assert len(payload["future_df"]) > 0
+    assert payload["comp_set_df"] is not None
+    assert len(payload["comp_set_df"]) > 0
     assert {"stay_date", "rooms_available", "rooms_sold", "room_revenue"}.issubset(payload["historical_mapping"])
     assert {"stay_date", "rooms_available", "rooms_sold"}.issubset(payload["future_mapping"])
     assert not any("sample_data.csv" in warning for warning in warnings)
@@ -51,8 +53,10 @@ def test_demo_payload_warns_when_optional_files_are_missing(tmp_path, monkeypatc
     assert len(payload["historical_df"]) > 0
     assert len(payload["future_df"]) > 0
     assert payload["events_df"] is None
+    assert payload["comp_set_df"] is None
     assert payload["budget_df"] is None
     assert any("events_sample.csv" in warning for warning in warnings)
+    assert any("comp_set_sample.csv" in warning for warning in warnings)
     assert any("budget_daily_sample.csv" in warning for warning in warnings)
 
 

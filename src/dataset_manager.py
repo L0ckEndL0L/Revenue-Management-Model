@@ -71,6 +71,7 @@ def save_dataset(
     historical_df: pd.DataFrame,
     future_df: pd.DataFrame,
     events_df: Optional[pd.DataFrame] = None,
+    comp_set_df: Optional[pd.DataFrame] = None,
     budget_df: Optional[pd.DataFrame] = None,
     historical_mapping: Optional[Dict[str, str]] = None,
     future_mapping: Optional[Dict[str, str]] = None,
@@ -86,6 +87,7 @@ def save_dataset(
         historical_df: Historical PMS data
         future_df: Future on-books data
         events_df: Optional events data
+        comp_set_df: Optional comp-set rate-shop data
         budget_df: Optional budget data
         historical_mapping: Optional column mappings for historical data
         future_mapping: Optional column mappings for future data
@@ -109,6 +111,7 @@ def save_dataset(
             metadata[name]["rows_historical"] = len(historical_df)
             metadata[name]["rows_future"] = len(future_df)
             metadata[name]["has_events"] = events_df is not None and len(events_df) > 0
+            metadata[name]["has_comp_set"] = comp_set_df is not None and len(comp_set_df) > 0
             metadata[name]["has_budget"] = budget_df is not None and len(budget_df) > 0
             metadata[name]["use_manual_rooms_available"] = use_manual_rooms_available
             metadata[name]["manual_rooms_available"] = manual_rooms_available
@@ -123,6 +126,7 @@ def save_dataset(
                 "rows_historical": len(historical_df),
                 "rows_future": len(future_df),
                 "has_events": events_df is not None and len(events_df) > 0,
+                "has_comp_set": comp_set_df is not None and len(comp_set_df) > 0,
                 "has_budget": budget_df is not None and len(budget_df) > 0,
                 "use_manual_rooms_available": use_manual_rooms_available,
                 "manual_rooms_available": manual_rooms_available,
@@ -139,11 +143,18 @@ def save_dataset(
         historical_df.to_csv(dataset_dir / "historical.csv", index=False)
         future_df.to_csv(dataset_dir / "future.csv", index=False)
         
-        if events_df is not None and len(events_df) > 0:
-            events_df.to_csv(dataset_dir / "events.csv", index=False)
-        
-        if budget_df is not None and len(budget_df) > 0:
-            budget_df.to_csv(dataset_dir / "budget.csv", index=False)
+        optional_files = {
+            "events.csv": events_df,
+            "comp_set.csv": comp_set_df,
+            "budget.csv": budget_df,
+        }
+
+        for filename, optional_df in optional_files.items():
+            file_path = dataset_dir / filename
+            if optional_df is not None and len(optional_df) > 0:
+                optional_df.to_csv(file_path, index=False)
+            elif file_path.exists():
+                file_path.unlink()
         
         # Save column mappings
         mappings = {
@@ -168,6 +179,7 @@ def load_dataset(name: str) -> tuple[
     Optional[pd.DataFrame],
     Optional[pd.DataFrame],
     Optional[pd.DataFrame],
+    Optional[pd.DataFrame],
     Dict[str, str],
     Dict[str, str],
     bool,
@@ -181,7 +193,7 @@ def load_dataset(name: str) -> tuple[
         name: Dataset name
     
     Returns:
-        Tuple of (historical_df, future_df, events_df, budget_df, historical_mapping, future_mapping, 
+        Tuple of (historical_df, future_df, events_df, comp_set_df, budget_df, historical_mapping, future_mapping, 
                  use_manual_rooms_available, manual_rooms_available)
         Returns None for missing optional dataframes
     """
@@ -196,6 +208,10 @@ def load_dataset(name: str) -> tuple[
         events_df = None
         if (dataset_dir / "events.csv").exists():
             events_df = pd.read_csv(dataset_dir / "events.csv")
+
+        comp_set_df = None
+        if (dataset_dir / "comp_set.csv").exists():
+            comp_set_df = pd.read_csv(dataset_dir / "comp_set.csv")
         
         budget_df = None
         if (dataset_dir / "budget.csv").exists():
@@ -211,7 +227,7 @@ def load_dataset(name: str) -> tuple[
                 mappings = json.load(f)
                 historical_mapping = mappings.get("historical_mapping", {})
                 future_mapping = mappings.get("future_mapping", {})
-            tailored_settings = mappings.get("tailored_settings", {})
+                tailored_settings = mappings.get("tailored_settings", {})
         
         # Load manual rooms available settings from metadata
         metadata = _load_metadata()
@@ -219,11 +235,11 @@ def load_dataset(name: str) -> tuple[
         use_manual_rooms_available = dataset_meta.get("use_manual_rooms_available", False)
         manual_rooms_available = dataset_meta.get("manual_rooms_available")
         
-        return historical_df, future_df, events_df, budget_df, historical_mapping, future_mapping, use_manual_rooms_available, manual_rooms_available, tailored_settings
+        return historical_df, future_df, events_df, comp_set_df, budget_df, historical_mapping, future_mapping, use_manual_rooms_available, manual_rooms_available, tailored_settings
     
     except Exception as e:
         print(f"Error loading dataset '{name}': {e}")
-        return None, None, None, None, {}, {}, False, None, {}
+        return None, None, None, None, None, {}, {}, False, None, {}
 
 
 def list_datasets() -> List[str]:

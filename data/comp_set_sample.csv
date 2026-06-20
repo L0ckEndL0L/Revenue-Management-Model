@@ -1,0 +1,25 @@
+stay_date,competitor_name,room_type,rate,source,refundable,breakfast_included,shop_timestamp
+2026-03-01,Harbor House Hotel,Standard King,181,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-01,City Center Inn,Standard King,169,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-01,Riverside Suites,Standard King,176,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-02,Harbor House Hotel,Standard King,172,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-02,City Center Inn,Standard King,160,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-02,Riverside Suites,Standard King,166,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-03,Harbor House Hotel,Standard King,175,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-03,City Center Inn,Standard King,163,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-03,Riverside Suites,Standard King,170,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-04,Harbor House Hotel,Standard King,179,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-04,City Center Inn,Standard King,166,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-04,Riverside Suites,Standard King,173,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-05,Harbor House Hotel,Standard King,185,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-05,City Center Inn,Standard King,171,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-05,Riverside Suites,Standard King,179,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-06,Harbor House Hotel,Standard King,198,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-06,City Center Inn,Standard King,184,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-06,Riverside Suites,Standard King,191,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-07,Harbor House Hotel,Standard King,218,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-07,City Center Inn,Standard King,202,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-07,Riverside Suites,Standard King,210,Mock Rate Shop,false,false,2026-02-20 09:00
+2026-03-08,Harbor House Hotel,Standard King,209,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-08,City Center Inn,Standard King,193,Mock Rate Shop,true,false,2026-02-20 09:00
+2026-03-08,Riverside Suites,Standard King,201,Mock Rate Shop,false,false,2026-02-20 09:00

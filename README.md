@@ -13,7 +13,10 @@ RateAnchor is a Streamlit capstone project for hotel revenue-management analysis
 * Future demand forecast and pricing simulation
 * Baseline recommendation output for comparison
 * Tailored recommendation settings with date-level median-rate controls
-* Dedicated comp-rate tab with monthly or daily comp-set median-rate entry
+* Property-type presets that change operating posture for luxury, resort, boutique, full-service, limited-service, select-service, extended-stay, and economy properties
+* Segment-focus presets that materially change tailored pricing posture for revenue, occupancy, corporate, group, premium, and leisure strategies
+* Dedicated comp-rate tab with monthly, daily, and mock comp-set median-rate inputs
+* Property/dataset switcher for moving between the demo property and saved property datasets
 * Event impact handling when event data is available
 * Budget comparison when daily or monthly budget data is available
 * Year-over-year comparison when prior-year reference data is available
@@ -28,7 +31,8 @@ RateAnchor is a Streamlit capstone project for hotel revenue-management analysis
 5. Review Forecast, Baseline, Tailored Model, Rate Recommendations, YoY, Charts, and Downloads.
 
 Demo mode does not require manual uploads. Optional demo files such as events and budget data are loaded when present and skipped with a warning when absent.
-Use the **Comp Rate Controls** tab when you want to switch between one monthly comp-set median rate and separate daily comp rates.
+Use the **Comp Rate Controls** tab when you want to switch between one monthly comp-set median rate, separate daily comp rates, or the included mock comp-set rate-shop file.
+Use the **Property Switcher** in the sidebar to move between the included demo property and saved property datasets.
 
 ## Required Demo Files
 
@@ -45,6 +49,7 @@ These files are optional and add richer outputs:
 data/events_sample.csv
 data/budget_daily_sample.csv
 data/budget_monthly_sample.csv
+data/comp_set_sample.csv
 data/historical/occupancy_2024.csv
 ```
 
@@ -203,6 +208,8 @@ RateAnchor is ready for advisor review as a capstone prototype. It is designed t
 * Kept validation intact while making static on-books demo files usable as simulation inputs.
 * Made month-mismatched optional budget files non-blocking for the pricing simulation.
 * Added model behavior checks for sparse-history and stronger-history properties, with low-data forecast fallback logic.
+* Added mock comp-set data, comp-set median ingestion, and saved dataset support for comp-set files.
+* Added a property/dataset switcher so reviewers can move between the demo property and saved property datasets.
 * Updated app copy to use the RateAnchor name consistently.
 * Added regression tests for demo loading and sample pipeline compatibility.
 

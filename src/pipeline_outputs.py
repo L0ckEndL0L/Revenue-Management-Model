@@ -27,6 +27,7 @@ def write_recommendation_outputs(
     budget_summary: dict,
     tailored_settings: dict | None,
     target_occ: float,
+    comp_set_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Path, Path, Path, Path, Path, Path]:
     """Write rate, tailored, and priority recommendation CSV outputs."""
     recommendations_df, _simulation_df = simulate_elasticity_pricing(
@@ -47,6 +48,7 @@ def write_recommendation_outputs(
         future_context,
         baseline_reco_df,
         tailored_settings,
+        comp_set_df=comp_set_df,
     )
     tailored_results_path = output_dir / "tailored_model_results.csv"
     tailored_results_df.to_csv(tailored_results_path, index=False)

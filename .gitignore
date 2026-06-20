@@ -75,6 +75,7 @@ data/historical/*.csv
 !data/events_sample.csv
 !data/budget_daily_sample.csv
 !data/budget_monthly_sample.csv
+!data/comp_set_sample.csv
 !data/historical/occupancy_2024.csv
 
 # Notebook artifacts

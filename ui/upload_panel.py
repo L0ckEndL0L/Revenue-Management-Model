@@ -89,11 +89,13 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
                 "historical_df",
                 "future_df",
                 "events_df",
+                "comp_set_df",
                 "budget_df",
                 "loaded_dataset_name",
                 "historical_mapping",
                 "future_mapping",
                 "load_dataset_success",
+                "demo_dataset_loaded",
                 "use_manual_rooms_available",
                 "manual_rooms_available",
                 "tailored_daily_median_editor",
@@ -115,6 +117,8 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
             st.session_state.historical_df = hist_preview
             st.session_state.load_dataset_success = False
             st.session_state.pop("loaded_dataset_name", None)
+            st.session_state.pop("demo_dataset_loaded", None)
+            st.session_state.pop("comp_set_df", None)
             st.caption(f"Historical columns: {', '.join([str(c) for c in hist_preview.columns])}")
 
         if future_file is not None:
@@ -122,6 +126,8 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
             st.session_state.future_df = fut_preview
             st.session_state.load_dataset_success = False
             st.session_state.pop("loaded_dataset_name", None)
+            st.session_state.pop("demo_dataset_loaded", None)
+            st.session_state.pop("comp_set_df", None)
             st.caption(f"Future columns: {', '.join([str(c) for c in fut_preview.columns])}")
 
         if events_file is not None:
