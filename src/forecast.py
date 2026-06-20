@@ -225,6 +225,8 @@ def build_future_forecast(
                 "forecast_rooms_sold",
                 "forecast_occ",
                 "base_demand",
+                "history_depth_days",
+                "forecast_method",
             ]
         )
 
@@ -241,20 +243,74 @@ def build_future_forecast(
     fut["month"] = fut["stay_date"].dt.month
     fut["on_books"] = pd.to_numeric(fut["rooms_sold"], errors="coerce").fillna(0.0)
 
+    history_depth_days = int(hist["stay_date"].nunique()) if len(hist) else 0
+    history_trust = float(np.clip(history_depth_days / 28.0, 0.0, 1.0))
+    if history_depth_days == 0:
+        forecast_method = "no_history_on_books_floor"
+    elif history_depth_days < 14:
+        forecast_method = "low_history_blended_fallback"
+    elif history_depth_days < 28:
+        forecast_method = "moderate_history_blended_seasonality"
+    else:
+        forecast_method = "strong_history_seasonality"
+
     dow_avg = hist.groupby("dow")["rooms_sold"].mean() if len(hist) else pd.Series(dtype=float)
     month_avg = hist.groupby("month")["rooms_sold"].mean() if len(hist) else pd.Series(dtype=float)
     global_avg = float(hist["rooms_sold"].mean()) if len(hist) else 0.0
+    observed_occupancy = (
+        hist["rooms_sold"] / hist["rooms_available"].replace(0, np.nan)
+        if len(hist) and "rooms_available" in hist.columns
+        else pd.Series(dtype=float)
+    )
+    global_occ = float(observed_occupancy.dropna().clip(lower=0.0, upper=1.0).median()) if observed_occupancy.notna().any() else np.nan
 
     base_from_dow = fut["dow"].map(dow_avg)
     base_from_month = fut["month"].map(month_avg)
-    fut["base_demand"] = np.nanmean(
-        np.vstack([
-            base_from_dow.fillna(global_avg).to_numpy(),
-            base_from_month.fillna(global_avg).to_numpy(),
-        ]),
-        axis=0,
-    )
-    fut["base_demand"] = pd.Series(fut["base_demand"], index=fut.index).fillna(global_avg).clip(lower=0.0)
+    seasonal_base = pd.Series(
+        np.nanmean(
+            np.vstack([
+                base_from_dow.fillna(global_avg).to_numpy(),
+                base_from_month.fillna(global_avg).to_numpy(),
+            ]),
+            axis=0,
+        ),
+        index=fut.index,
+    ).fillna(global_avg).clip(lower=0.0)
+
+    if pd.notna(global_occ):
+        inventory_fallback = pd.to_numeric(fut["rooms_available"], errors="coerce").fillna(0.0).clip(lower=0.0) * global_occ
+    else:
+        inventory_fallback = pd.Series(global_avg, index=fut.index, dtype=float)
+
+    fallback_base = pd.concat(
+        [
+            pd.to_numeric(fut["on_books"], errors="coerce").fillna(0.0),
+            inventory_fallback.fillna(global_avg),
+            pd.Series(global_avg, index=fut.index, dtype=float),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    fut["base_demand"] = (
+        seasonal_base * history_trust
+        + fallback_base * (1.0 - history_trust)
+    ).fillna(fallback_base).clip(lower=0.0)
+
+    if history_depth_days < 14:
+        # Sparse history can overreact to one unusual day. Keep the model close
+        # to the on-books/global fallback until more property history exists.
+        lower_bound = pd.to_numeric(fut["on_books"], errors="coerce").fillna(0.0)
+        upper_bound = pd.concat(
+            [
+                fallback_base * 1.20,
+                lower_bound,
+            ],
+            axis=1,
+        ).max(axis=1)
+        fut["base_demand"] = fut["base_demand"].clip(lower=lower_bound, upper=upper_bound)
+
+    fut["history_depth_days"] = history_depth_days
+    fut["forecast_method"] = forecast_method
 
     if events_df is not None and len(events_df) > 0 and "stay_date" in events_df.columns:
         events = events_df[["stay_date", "impact_level"]].copy()
@@ -289,5 +345,7 @@ def build_future_forecast(
             "base_demand",
             "forecast_rooms_sold",
             "forecast_occ",
+            "history_depth_days",
+            "forecast_method",
         ]
     ].copy()

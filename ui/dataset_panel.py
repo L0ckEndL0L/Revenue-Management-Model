@@ -11,43 +11,105 @@ from src.tailored import validate_tailored_settings
 from ui.tailored_panel import current_tailored_settings, initialize_tailored_session
 
 
-def _load_demo_dataset() -> None:
-    data_dir = Path(__file__).resolve().parents[1] / "data"
-    historical_df = read_table_source(data_dir / "sample_data.csv")
-    future_df = read_table_source(data_dir / "future_on_books_sample.csv")
-    events_df = read_table_source(data_dir / "events_sample.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEMO_DATA_DIR = PROJECT_ROOT / "data"
+DEMO_REQUIRED_FILES = {
+    "historical": "sample_data.csv",
+    "future": "future_on_books_sample.csv",
+}
+DEMO_OPTIONAL_FILES = {
+    "events": "events_sample.csv",
+    "daily_budget": "budget_daily_sample.csv",
+    "monthly_budget": "budget_monthly_sample.csv",
+}
 
-    daily_budget_path = data_dir / "budget_daily_sample.csv"
-    monthly_budget_path = data_dir / "budget_monthly_sample.csv"
-    budget_path = daily_budget_path if daily_budget_path.exists() else monthly_budget_path
-    budget_df = read_table_source(budget_path)
 
-    st.session_state.historical_df = historical_df
-    st.session_state.future_df = future_df
-    st.session_state.events_df = events_df
-    st.session_state.budget_df = budget_df
-    st.session_state.historical_mapping = auto_map_columns(historical_df)
-    st.session_state.future_mapping = auto_map_columns(future_df)
+def _demo_file_path(filename: str) -> Path:
+    """Resolve demo files relative to the repository root for local and Cloud runs."""
+    return DEMO_DATA_DIR / filename
+
+
+def _load_optional_demo_table(filename: str, warnings: list[str]) -> object | None:
+    path = _demo_file_path(filename)
+    if not path.exists():
+        warnings.append(f"Optional demo file not found: data/{filename}")
+        return None
+    return read_table_source(path)
+
+
+def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
+    warnings: list[str] = []
+    missing_required = [
+        f"data/{filename}"
+        for filename in DEMO_REQUIRED_FILES.values()
+        if not _demo_file_path(filename).exists()
+    ]
+    if missing_required:
+        raise FileNotFoundError(
+            "Required demo file(s) missing: "
+            + ", ".join(missing_required)
+            + ". Restore these files or update the demo loader."
+        )
+
+    historical_df = read_table_source(_demo_file_path(DEMO_REQUIRED_FILES["historical"]))
+    future_df = read_table_source(_demo_file_path(DEMO_REQUIRED_FILES["future"]))
+    events_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["events"], warnings)
+
+    budget_df = None
+    daily_budget_path = _demo_file_path(DEMO_OPTIONAL_FILES["daily_budget"])
+    monthly_budget_path = _demo_file_path(DEMO_OPTIONAL_FILES["monthly_budget"])
+    if daily_budget_path.exists():
+        budget_df = read_table_source(daily_budget_path)
+    elif monthly_budget_path.exists():
+        budget_df = read_table_source(monthly_budget_path)
+        warnings.append("Daily demo budget not found; using monthly demo budget instead.")
+    else:
+        warnings.append("Optional demo budget files not found: data/budget_daily_sample.csv or data/budget_monthly_sample.csv")
+
+    return {
+        "historical_df": historical_df,
+        "future_df": future_df,
+        "events_df": events_df,
+        "budget_df": budget_df,
+        "historical_mapping": auto_map_columns(historical_df),
+        "future_mapping": auto_map_columns(future_df),
+    }, warnings
+
+
+def _load_demo_dataset() -> list[str]:
+    payload, warnings = load_demo_dataset_payload()
+
+    st.session_state.historical_df = payload["historical_df"]
+    st.session_state.future_df = payload["future_df"]
+    st.session_state.events_df = payload["events_df"]
+    st.session_state.budget_df = payload["budget_df"]
+    st.session_state.historical_mapping = payload["historical_mapping"]
+    st.session_state.future_mapping = payload["future_mapping"]
     st.session_state.use_manual_rooms_available = False
     st.session_state.manual_rooms_available = None
-    st.session_state.loaded_dataset_name = "Demo Dataset"
+    st.session_state.loaded_dataset_name = "RateAnchor Demo Dataset"
     st.session_state.load_dataset_success = True
-    st.session_state.budget_input_mode = "Upload spreadsheet"
+    st.session_state.budget_input_mode = "Upload spreadsheet" if payload["budget_df"] is not None else "No budget"
     st.session_state.demo_dataset_loaded = True
+    initialize_tailored_session({})
+    return warnings
 
 
 def render_dataset_panel() -> None:
-    st.header("Datasets")
+    st.header("Demo and Datasets")
+    st.caption("Use the built-in RateAnchor demo for advisor review, or load saved/uploaded hotel files.")
 
     if st.button("Load Demo Dataset", key="load_demo_dataset_btn", type="primary", use_container_width=True):
         try:
-            _load_demo_dataset()
-            st.success("Demo data loaded.")
+            warnings = _load_demo_dataset()
+            st.success("RateAnchor demo data loaded. Click Run Pricing Simulation when you are ready.")
+            for warning in warnings:
+                st.warning(warning)
         except Exception as exc:
             st.error(f"Failed to load demo data: {exc}")
 
     if st.session_state.get("demo_dataset_loaded"):
-        st.info("Demo data loaded. Click Run Pricing Simulation to generate forecasts, budget context, YoY comparison, and pricing recommendations.")
+        st.info("Demo mode is active. Run the simulation to generate forecast, baseline, tailored, YoY, budget, and event-aware outputs.")
 
     dataset_tab1, dataset_tab2, dataset_tab3 = st.tabs(["Load", "Save", "Manage"])
 

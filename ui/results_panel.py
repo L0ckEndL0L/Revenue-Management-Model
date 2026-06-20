@@ -81,6 +81,8 @@ def render_results(
     )
     if summary.get("using_uploaded_comparison", False):
         st.caption("YoY and baseline comparison are using the two uploaded datasets as the prior-year/current-year pair.")
+    if budget_summary.get("budget_warning"):
+        st.warning(f"Budget comparison skipped: {budget_summary['budget_warning']}")
 
     tailored_summary = summary.get("tailored_summary", {})
     st.subheader("Tailored Model")
@@ -321,6 +323,6 @@ def render_results(
     st.download_button(
         "Download all outputs (zip)",
         data=zip_bytes,
-        file_name=f"hotel_rms_outputs_{timestamp}.zip",
+        file_name=f"rateanchor_outputs_{timestamp}.zip",
         mime="application/zip",
     )

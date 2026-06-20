@@ -11,10 +11,15 @@ import pandas as pd
 
 
 ALLOWED_UPDATE_FREQUENCIES = {
+    "Every 30 minutes": timedelta(minutes=30),
     "Every hour": timedelta(hours=1),
     "Every 2 hours": timedelta(hours=2),
+    "Daily": timedelta(days=1),
     "Manual only": None,
 }
+MONTHLY_COMP_RATE_MODE = "Monthly comp rate"
+DAILY_COMP_RATE_MODE = "Daily comp rates"
+ALLOWED_COMP_RATE_INPUT_MODES = {MONTHLY_COMP_RATE_MODE, DAILY_COMP_RATE_MODE}
 
 MANUAL_DAILY_SOURCE = "Manual daily input"
 DATASET_DERIVED_SOURCE = "Dataset-derived daily median"
@@ -48,6 +53,7 @@ class TailoredModelSettings:
     event_impact_factor: float = 1.0
     minimum_acceptable_rate: float = 80.0
     maximum_recommended_rate: float = 450.0
+    comp_rate_input_mode: str = DAILY_COMP_RATE_MODE
     global_median_rate_fallback: float | None = None
     median_rate: float | None = None
     median_rate_update_frequency: str = "Manual only"
@@ -73,6 +79,8 @@ def normalize_tailored_settings(settings: dict[str, Any] | None) -> dict[str, An
 
     if normalized.get("daily_median_rates") is None:
         normalized["daily_median_rates"] = []
+    if normalized.get("comp_rate_input_mode") not in ALLOWED_COMP_RATE_INPUT_MODES:
+        normalized["comp_rate_input_mode"] = DAILY_COMP_RATE_MODE
 
     return normalized
 
@@ -186,6 +194,12 @@ def validate_tailored_settings(settings: dict[str, Any] | None) -> tuple[dict[st
     if minimum_rate is not None and maximum_rate is not None and maximum_rate <= minimum_rate:
         errors.append("maximum recommended rate must be greater than minimum acceptable rate")
 
+    comp_rate_input_mode = str(sanitized.get("comp_rate_input_mode", DAILY_COMP_RATE_MODE))
+    if comp_rate_input_mode not in ALLOWED_COMP_RATE_INPUT_MODES:
+        errors.append("comp rate input mode must be one of: Monthly comp rate, Daily comp rates")
+        comp_rate_input_mode = DAILY_COMP_RATE_MODE
+    sanitized["comp_rate_input_mode"] = comp_rate_input_mode
+
     global_median = _coerce_float(sanitized.get("global_median_rate_fallback"), "global median fallback", errors, allow_none=True)
     if global_median is not None:
         if global_median <= 0:
@@ -200,7 +214,7 @@ def validate_tailored_settings(settings: dict[str, Any] | None) -> tuple[dict[st
 
     update_frequency = str(sanitized.get("median_rate_update_frequency", "Manual only"))
     if update_frequency not in ALLOWED_UPDATE_FREQUENCIES:
-        errors.append("update frequency must be one of: Every hour, Every 2 hours, Manual only")
+        errors.append("update frequency must be one of: Every 30 minutes, Every hour, Every 2 hours, Daily, Manual only")
     else:
         sanitized["median_rate_update_frequency"] = update_frequency
 
@@ -395,7 +409,8 @@ def build_daily_median_rate_table(
     forecast_dates = pd.DataFrame({"stay_date": pd.to_datetime(future_df["stay_date"], errors="coerce")})
     forecast_dates = forecast_dates.dropna(subset=["stay_date"]).drop_duplicates().sort_values("stay_date").reset_index(drop=True)
     suggested = infer_median_rate_from_dataset(future_df, baseline_df=baseline_df)
-    manual_lookup = pd.DataFrame(validated_settings.get("daily_median_rates", []))
+    use_daily_comp_rates = validated_settings.get("comp_rate_input_mode") == DAILY_COMP_RATE_MODE
+    manual_lookup = pd.DataFrame(validated_settings.get("daily_median_rates", []) if use_daily_comp_rates else [])
     if len(manual_lookup) > 0:
         manual_lookup["stay_date"] = pd.to_datetime(manual_lookup["stay_date"], errors="coerce")
     else:
@@ -423,7 +438,7 @@ def build_daily_median_rate_table(
             source_values.append(MANUAL_DAILY_SOURCE)
             final_values.append(float(manual_daily))
             timestamp_values.append(row_timestamp)
-        elif pd.notna(suggested_daily):
+        elif use_daily_comp_rates and pd.notna(suggested_daily):
             source_values.append(DATASET_DERIVED_SOURCE)
             final_values.append(float(suggested_daily))
             timestamp_values.append(None)
@@ -719,6 +734,7 @@ def build_tailored_summary(results_df: pd.DataFrame, settings: dict[str, Any] | 
         "property_type": validated_settings["property_type"],
         "segment_focus": validated_settings["segment_focus"],
         "global_median_rate_fallback": validated_settings.get("global_median_rate_fallback"),
+        "comp_rate_input_mode": validated_settings["comp_rate_input_mode"],
         "median_rate": validated_settings.get("global_median_rate_fallback"),
         "median_rate_last_updated": validated_settings.get("median_rate_last_updated"),
         "median_rate_update_frequency": validated_settings["median_rate_update_frequency"],

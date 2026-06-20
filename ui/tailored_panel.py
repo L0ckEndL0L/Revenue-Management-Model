@@ -8,6 +8,8 @@ import streamlit as st
 
 from src.tailored import (
     ALLOWED_UPDATE_FREQUENCIES,
+    DAILY_COMP_RATE_MODE,
+    MONTHLY_COMP_RATE_MODE,
     build_daily_median_rate_table,
     default_tailored_settings,
     update_daily_median_rates,
@@ -159,12 +161,30 @@ def render_tailored_sidebar() -> None:
         st.number_input("Minimum acceptable rate", min_value=0.0, step=1.0, key=tailored_state_key("minimum_acceptable_rate"))
         st.number_input("Maximum recommended rate", min_value=0.0, step=1.0, key=tailored_state_key("maximum_recommended_rate"))
 
-    st.text_input(
-        "Global Median Rate Fallback",
-        key=tailored_state_key("global_median_rate_fallback"),
-        placeholder="Used only when a date-level median is unavailable",
+
+def render_comp_rate_controls(tailored_future_preview: pd.DataFrame) -> None:
+    st.subheader("Comp Rate Input")
+    st.caption("Choose one monthly comp-set median rate or manage a separate comp rate by forecast date.")
+
+    current_mode = str(st.session_state.get(tailored_state_key("comp_rate_input_mode"), DAILY_COMP_RATE_MODE))
+    mode_options = [MONTHLY_COMP_RATE_MODE, DAILY_COMP_RATE_MODE]
+    if current_mode not in mode_options:
+        current_mode = DAILY_COMP_RATE_MODE
+
+    st.radio(
+        "Comp rate entry mode",
+        options=mode_options,
+        index=mode_options.index(current_mode),
+        horizontal=True,
+        key=tailored_state_key("comp_rate_input_mode"),
     )
-    st.caption("This global value is only used when a forecast date does not have a manual or dataset-derived daily median.")
+
+    st.text_input(
+        "Monthly comp-set median rate",
+        key=tailored_state_key("global_median_rate_fallback"),
+        placeholder="Used for the whole month or as the daily fallback",
+    )
+    st.caption("In monthly mode this value anchors every forecast date. In daily mode it is used only when a date-level comp rate is blank.")
 
     median_frequency_options = list(ALLOWED_UPDATE_FREQUENCIES.keys())
     current_frequency = str(st.session_state.get(tailored_state_key("median_rate_update_frequency"), "Manual only"))
@@ -175,13 +195,13 @@ def render_tailored_sidebar() -> None:
         key=tailored_state_key("median_rate_update_frequency"),
     )
     st.caption(
-        "Last median rate update: "
+        "Last comp rate update: "
         + format_optional_timestamp(st.session_state.get(tailored_state_key("median_rate_last_updated")))
     )
 
     median_col1, median_col2 = st.columns(2)
     with median_col1:
-        if st.button("Clear Global Fallback", key="tailored_clear_global_fallback", use_container_width=True):
+        if st.button("Clear Monthly Comp Rate", key="tailored_clear_global_fallback", use_container_width=True):
             refreshed = dict(current_tailored_settings())
             refreshed["global_median_rate_fallback"] = None
             refreshed["median_rate"] = None
@@ -189,11 +209,11 @@ def render_tailored_sidebar() -> None:
             queue_tailored_session_update(refreshed)
             st.rerun()
     with median_col2:
-        if st.button("Update Global Fallback Timestamp", key="tailored_update_median_timestamp", use_container_width=True):
+        if st.button("Update Comp Rate Timestamp", key="tailored_update_median_timestamp", use_container_width=True):
             current_settings = current_tailored_settings()
             median_text = str(current_settings.get("global_median_rate_fallback", "")).strip()
             if not median_text:
-                st.error("Enter a global median fallback before updating its timestamp.")
+                st.error("Enter a monthly comp-set median rate before updating its timestamp.")
             else:
                 validated_settings, tailored_errors = validate_tailored_settings(current_settings)
                 if tailored_errors:
@@ -203,13 +223,19 @@ def render_tailored_sidebar() -> None:
                     queue_tailored_session_update(refreshed)
                     st.rerun()
 
+    if st.session_state.get(tailored_state_key("comp_rate_input_mode"), DAILY_COMP_RATE_MODE) == DAILY_COMP_RATE_MODE:
+        render_daily_median_editor(tailored_future_preview)
+    else:
+        st.info("Daily comp-rate editing is off. The monthly comp-set median rate will be used for each forecast date.")
+
 
 def render_daily_median_editor(tailored_future_preview: pd.DataFrame) -> None:
     if len(tailored_future_preview) == 0:
+        st.info("Load demo data or upload a future on-books report to edit daily comp rates.")
         return
 
-    st.subheader("Daily Median Rates")
-    st.caption("Edit manual daily medians by forecast date. Blank manual values are allowed and will fall back to the dataset-derived or global median.")
+    st.subheader("Daily Comp Rates")
+    st.caption("Edit comp-set median rates by forecast date. Blank manual values fall back to the dataset-derived daily rate or monthly comp-set median.")
 
     daily_median_df = build_daily_median_rate_table(
         tailored_future_preview,
@@ -234,11 +260,11 @@ def render_daily_median_editor(tailored_future_preview: pd.DataFrame) -> None:
         ],
         column_config={
             "stay_date": st.column_config.DateColumn("Forecast date", format="YYYY-MM-DD"),
-            "suggested_dataset_median_rate": st.column_config.NumberColumn("Suggested dataset median rate", format="$%.2f"),
-            "manual_daily_median_rate": st.column_config.NumberColumn("Manual median rate", min_value=0.01, step=1.0, format="$%.2f"),
-            "global_median_fallback": st.column_config.NumberColumn("Global median fallback", format="$%.2f"),
+            "suggested_dataset_median_rate": st.column_config.NumberColumn("Suggested dataset comp rate", format="$%.2f"),
+            "manual_daily_median_rate": st.column_config.NumberColumn("Manual daily comp rate", min_value=0.01, step=1.0, format="$%.2f"),
+            "global_median_fallback": st.column_config.NumberColumn("Monthly comp-set median", format="$%.2f"),
             "final_median_rate_used": st.column_config.NumberColumn("Final median rate used", format="$%.2f"),
-            "median_rate_source": "Median-rate source",
+            "median_rate_source": "Comp-rate source",
             "last_median_update_timestamp": "Last updated timestamp",
         },
     )

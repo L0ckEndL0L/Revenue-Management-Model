@@ -240,48 +240,59 @@ def build_month_forecast_budget_context(
     }
 
     if budget_path:
-        daily_budget_df, _ = prepare_monthly_budget_targets(
-            budget_path=budget_path,
-            current_year=target_year,
-            current_month=target_month,
-            historical_df=historical_metrics,
-            daily_distribution_method=str(config.get("budget_distribution", "dow_weighted")),
-        )
-
-        forecast_remaining_for_budget = month_future[["stay_date", "rooms_available", "forecast_rooms_sold", "rooms_sold"]].copy()
-        budget_rate_series = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
-        budget_rate_series = budget_rate_series.where(budget_rate_series > 0).fillna(
-            float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate)
-        )
-        pickup_rooms_for_budget = (
-            pd.to_numeric(forecast_remaining_for_budget["forecast_rooms_sold"], errors="coerce").fillna(0.0)
-            - pd.to_numeric(forecast_remaining_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
-        ).clip(lower=0.0)
-        forecast_remaining_for_budget["forecast_revenue"] = pickup_rooms_for_budget * budget_rate_series
-
-        month_actual_for_budget = month_future[["stay_date", "room_revenue", "rooms_available", "rooms_sold"]].copy()
-        month_actual_for_budget["room_revenue"] = pd.to_numeric(month_actual_for_budget["room_revenue"], errors="coerce")
-        if month_actual_for_budget["room_revenue"].isna().any() or (month_actual_for_budget["room_revenue"] <= 0).all():
-            fallback_rooms = pd.to_numeric(month_actual_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
-            fallback_rates = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
-            fallback_rates = fallback_rates.where(fallback_rates > 0).fillna(float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate))
-            month_actual_for_budget["room_revenue"] = month_actual_for_budget["room_revenue"].where(
-                month_actual_for_budget["room_revenue"] > 0,
-                fallback_rooms * fallback_rates,
+        budget_warning = None
+        try:
+            daily_budget_df, _ = prepare_monthly_budget_targets(
+                budget_path=budget_path,
+                current_year=target_year,
+                current_month=target_month,
+                historical_df=historical_metrics,
+                daily_distribution_method=str(config.get("budget_distribution", "dow_weighted")),
             )
+        except ValueError as exc:
+            message = str(exc)
+            if "current month/year" not in message:
+                raise
+            daily_budget_df = pd.DataFrame()
+            budget_warning = message
 
-        budget_as_of_date = as_of_date
-        if len(month_actual_for_budget):
-            budget_as_of_date = pd.to_datetime(month_actual_for_budget["stay_date"], errors="coerce").max()
-            if pd.isna(budget_as_of_date):
-                budget_as_of_date = as_of_date
+        if len(daily_budget_df):
+            forecast_remaining_for_budget = month_future[["stay_date", "rooms_available", "forecast_rooms_sold", "rooms_sold"]].copy()
+            budget_rate_series = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
+            budget_rate_series = budget_rate_series.where(budget_rate_series > 0).fillna(
+                float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate)
+            )
+            pickup_rooms_for_budget = (
+                pd.to_numeric(forecast_remaining_for_budget["forecast_rooms_sold"], errors="coerce").fillna(0.0)
+                - pd.to_numeric(forecast_remaining_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
+            ).clip(lower=0.0)
+            forecast_remaining_for_budget["forecast_revenue"] = pickup_rooms_for_budget * budget_rate_series
 
-        budget_summary = calculate_budget_progress(
-            month_actual_df=month_actual_for_budget,
-            forecast_remaining_df=forecast_remaining_for_budget,
-            daily_budget_df=daily_budget_df,
-            as_of_date=budget_as_of_date,
-        )
+            month_actual_for_budget = month_future[["stay_date", "room_revenue", "rooms_available", "rooms_sold"]].copy()
+            month_actual_for_budget["room_revenue"] = pd.to_numeric(month_actual_for_budget["room_revenue"], errors="coerce")
+            if month_actual_for_budget["room_revenue"].isna().any() or (month_actual_for_budget["room_revenue"] <= 0).all():
+                fallback_rooms = pd.to_numeric(month_actual_for_budget["rooms_sold"], errors="coerce").fillna(0.0)
+                fallback_rates = pd.to_numeric(month_future.get("current_rate", pd.Series(dtype=float)), errors="coerce")
+                fallback_rates = fallback_rates.where(fallback_rates > 0).fillna(float(forecast_rate_series.median() if len(forecast_rate_series) else fallback_future_rate))
+                month_actual_for_budget["room_revenue"] = month_actual_for_budget["room_revenue"].where(
+                    month_actual_for_budget["room_revenue"] > 0,
+                    fallback_rooms * fallback_rates,
+                )
+
+            budget_as_of_date = as_of_date
+            if len(month_actual_for_budget):
+                budget_as_of_date = pd.to_datetime(month_actual_for_budget["stay_date"], errors="coerce").max()
+                if pd.isna(budget_as_of_date):
+                    budget_as_of_date = as_of_date
+
+            budget_summary = calculate_budget_progress(
+                month_actual_df=month_actual_for_budget,
+                forecast_remaining_df=forecast_remaining_for_budget,
+                daily_budget_df=daily_budget_df,
+                as_of_date=budget_as_of_date,
+            )
+        elif budget_warning:
+            budget_summary["budget_warning"] = budget_warning
 
     remaining_budget_total = float(budget_summary.get("remaining_budget", 0.0))
     budget_gap = remaining_budget_total

@@ -115,10 +115,17 @@ def run_pipeline(
         manual_rooms_available=manual_rooms_available,
     )
     if len(future_df) > 0:
+        future_validation_as_of_date = as_of_date
+        if future_path:
+            future_dates = pd.to_datetime(future_df["stay_date"], errors="coerce").dropna()
+            future_revenue = pd.to_numeric(future_df.get("room_revenue", pd.Series(dtype=float)), errors="coerce")
+            if len(future_dates) and future_dates.max() <= as_of_date and future_revenue.isna().any():
+                future_validation_as_of_date = future_dates.min() - pd.Timedelta(days=1)
+
         future_df, future_validation = validate_data(
             future_df,
             allow_overbooking=allow_overbooking,
-            as_of_date=as_of_date,
+            as_of_date=future_validation_as_of_date,
             default_current_rate=default_current_rate,
         )
     else:

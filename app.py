@@ -1,5 +1,5 @@
 """
-Streamlit UI for RMS with forward-looking on-books pricing simulation.
+Streamlit UI for RateAnchor with forward-looking on-books pricing simulation.
 
 Run:
     streamlit run app.py
@@ -23,7 +23,7 @@ from ui.tailored_panel import (
     current_tailored_settings,
     initialize_tailored_session,
     prepare_tailored_future_preview,
-    render_daily_median_editor,
+    render_comp_rate_controls,
     render_tailored_sidebar,
 )
 from ui.upload_panel import render_upload_panel
@@ -54,7 +54,8 @@ def _save_uploaded_file(uploaded_file, destination: Path) -> Path:
 
 def _render_pricing_sidebar() -> dict:
     with st.expander("Advanced Pricing Settings", expanded=False):
-        st.header("Pricing Configuration")
+        st.header("Pricing Controls")
+        st.caption("Defaults are tuned for the demo. Adjust only when you want to show a sensitivity scenario.")
         use_manual_rooms_available = st.checkbox(
             "Manually set total rooms for all dates",
             value=st.session_state.get("use_manual_rooms_available", False),
@@ -92,23 +93,23 @@ def _render_pricing_sidebar() -> dict:
 
 
 def _run_dashboard() -> None:
-    st.set_page_config(page_title="Hotel RMS Pricing Simulation", layout="wide")
+    st.set_page_config(page_title="RateAnchor Pricing Simulation", layout="wide")
 
     apply_pending_tailored_session_update()
     initialize_tailored_session()
 
-    st.title("Hotel Revenue Management Decision Support System")
+    st.title("RateAnchor")
     st.write(
-        "This dashboard cleans hotel PMS-style data, calculates KPIs, compares YoY performance, "
-        "forecasts demand, and produces explainable pricing recommendations."
+        "A hotel revenue-management dashboard that cleans PMS-style data, forecasts demand, "
+        "compares baseline and tailored pricing, and produces explainable rate recommendations."
     )
     st.markdown(
         """
-        **Workflow**
-        1. Load demo data or upload PMS reports
-        2. Validate and map fields
-        3. Run pricing simulation
-        4. Review KPIs, YoY, budget impact, tailored model output, and recommendations
+        **Five-minute demo flow**
+        1. Click **Load Demo Dataset** in the sidebar
+        2. Review the loaded historical and future on-books previews
+        3. Click **Run Pricing Simulation**
+        4. Open the Forecast, Baseline, Tailored Model, Rate Recommendations, YoY, and Downloads sections
         """
     )
 
@@ -116,19 +117,21 @@ def _run_dashboard() -> None:
         render_dataset_panel()
         st.divider()
         pricing_config = _render_pricing_sidebar()
-        st.divider()
-        with st.expander("Tailored Model Settings", expanded=False):
-            render_tailored_sidebar()
 
-    upload_state = render_upload_panel(pricing_config["use_manual_rooms_available"])
-    with st.expander("Budget Settings", expanded=False):
-        _, budget_input_mode = render_budget_panel()
+    setup_tab, comp_rate_tab = st.tabs(["Simulation Setup", "Comp Rate Controls"])
+    with setup_tab:
+        upload_state = render_upload_panel(pricing_config["use_manual_rooms_available"])
+        with st.expander("Budget Settings", expanded=False):
+            _, budget_input_mode = render_budget_panel()
 
     tailored_future_preview = prepare_tailored_future_preview(
         upload_state["fut_preview"],
         upload_state["future_mapping"] or st.session_state.get("future_mapping", {}),
     )
-    render_daily_median_editor(tailored_future_preview)
+    with comp_rate_tab:
+        render_tailored_sidebar()
+        st.divider()
+        render_comp_rate_controls(tailored_future_preview)
 
     action_col1, action_col2 = st.columns(2)
     with action_col1:
@@ -143,10 +146,10 @@ def _run_dashboard() -> None:
     hist_preview = upload_state["hist_preview"]
     fut_preview = upload_state["fut_preview"]
     if hist_preview is None:
-        st.error("Upload or load a historical PMS report first.")
+        st.error("Load the RateAnchor demo dataset or upload a historical PMS report first.")
         return
     if fut_preview is None:
-        st.error("Upload or load a future on-books report first.")
+        st.error("Load the RateAnchor demo dataset or upload a future on-books report first.")
         return
 
     try:

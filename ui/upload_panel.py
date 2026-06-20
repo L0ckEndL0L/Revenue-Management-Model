@@ -14,8 +14,13 @@ def read_uploaded_table(uploaded_file) -> pd.DataFrame:
     return read_table_source(uploaded_file, filename=uploaded_file.name)
 
 
-def mapping_ui(raw_df: pd.DataFrame, required: list[str], key_prefix: str) -> Dict[str, str]:
-    mapping = auto_map_columns(raw_df)
+def mapping_ui(
+    raw_df: pd.DataFrame,
+    required: list[str],
+    key_prefix: str,
+    initial_mapping: Dict[str, str] | None = None,
+) -> Dict[str, str]:
+    mapping = merge_saved_mapping_with_auto(raw_df, initial_mapping)
     missing = [c for c in required if c not in mapping]
 
     if missing:
@@ -31,7 +36,12 @@ def mapping_ui(raw_df: pd.DataFrame, required: list[str], key_prefix: str) -> Di
 
 
 def merge_saved_mapping_with_auto(raw_df: pd.DataFrame, saved_mapping: Dict[str, str] | None) -> Dict[str, str]:
-    merged = dict(saved_mapping or {})
+    valid_columns = set(raw_df.columns)
+    merged = {
+        canonical: actual
+        for canonical, actual in dict(saved_mapping or {}).items()
+        if actual in valid_columns
+    }
     auto_mapping = auto_map_columns(raw_df)
     for key, value in auto_mapping.items():
         merged.setdefault(key, value)
@@ -39,7 +49,8 @@ def merge_saved_mapping_with_auto(raw_df: pd.DataFrame, saved_mapping: Dict[str,
 
 
 def render_upload_panel(use_manual_rooms_available: bool) -> dict:
-    st.subheader("Uploads")
+    st.subheader("Data Inputs")
+    st.caption("Use demo mode for a complete sample run, or upload historical and future on-books reports for your own property.")
 
     dataset_loaded_mode = (
         bool(st.session_state.get("load_dataset_success", False))
@@ -121,7 +132,12 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
         historical_required = ["stay_date", "rooms_sold", "room_revenue"]
         if not use_manual_rooms_available:
             historical_required.insert(1, "rooms_available")
-        historical_mapping = mapping_ui(hist_preview, historical_required, "historical")
+        historical_mapping = mapping_ui(
+            hist_preview,
+            historical_required,
+            "historical",
+            st.session_state.get("historical_mapping"),
+        )
         with st.expander("Historical preview", expanded=False):
             st.dataframe(hist_preview.head(40), use_container_width=True)
 
@@ -141,7 +157,12 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
         future_required = ["stay_date", "rooms_sold"]
         if not use_manual_rooms_available:
             future_required.insert(1, "rooms_available")
-        future_mapping = mapping_ui(fut_preview, future_required, "future")
+        future_mapping = mapping_ui(
+            fut_preview,
+            future_required,
+            "future",
+            st.session_state.get("future_mapping"),
+        )
         with st.expander("Future preview", expanded=False):
             st.dataframe(fut_preview.head(40), use_container_width=True)
 

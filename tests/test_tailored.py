@@ -8,9 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.tailored import (
     DATASET_DERIVED_SOURCE,
+    DAILY_COMP_RATE_MODE,
     GLOBAL_FALLBACK_SOURCE,
     MANUAL_DAILY_SOURCE,
     MISSING_MEDIAN_SOURCE,
+    MONTHLY_COMP_RATE_MODE,
     build_daily_median_rate_table,
     build_tailored_recommendations,
     build_tailored_summary,
@@ -111,6 +113,43 @@ def test_dataset_derived_daily_median_is_used_when_manual_is_blank() -> None:
     assert july_2["median_rate_source"] == DATASET_DERIVED_SOURCE
 
 
+def test_monthly_comp_rate_mode_uses_global_rate_for_each_date() -> None:
+    settings = default_tailored_settings()
+    settings.update(
+        {
+            "comp_rate_input_mode": MONTHLY_COMP_RATE_MODE,
+            "global_median_rate_fallback": 140.0,
+            "daily_median_rates": [
+                {"stay_date": "2026-07-01", "manual_daily_median_rate": 180.0}
+            ],
+        }
+    )
+
+    table = build_daily_median_rate_table(_sample_future_df(), settings, baseline_df=_sample_baseline_df())
+
+    assert set(table["median_rate_source"]) == {GLOBAL_FALLBACK_SOURCE}
+    assert set(table["final_median_rate_used"]) == {140.0}
+
+
+def test_daily_comp_rate_mode_can_override_monthly_rate_by_date() -> None:
+    settings = default_tailored_settings()
+    settings.update(
+        {
+            "comp_rate_input_mode": DAILY_COMP_RATE_MODE,
+            "global_median_rate_fallback": 140.0,
+            "daily_median_rates": [
+                {"stay_date": "2026-07-01", "manual_daily_median_rate": 180.0}
+            ],
+        }
+    )
+
+    table = build_daily_median_rate_table(_sample_future_df(), settings, baseline_df=_sample_baseline_df())
+    july_1 = table.loc[table["stay_date"] == "2026-07-01"].iloc[0]
+
+    assert july_1["median_rate_source"] == MANUAL_DAILY_SOURCE
+    assert july_1["final_median_rate_used"] == 180.0
+
+
 def test_global_fallback_is_used_only_when_no_daily_median_exists() -> None:
     settings = default_tailored_settings()
     settings.update(
@@ -169,7 +208,7 @@ def test_validate_tailored_settings_rejects_invalid_inputs_cleanly() -> None:
         "minimum_acceptable_rate": 200,
         "maximum_recommended_rate": 150,
         "baseline_occupancy_sensitivity": 3.0,
-        "median_rate_update_frequency": "Every 30 minutes",
+        "median_rate_update_frequency": "Every 7 minutes",
         "daily_median_rates": [
             {"stay_date": "2026-07-02", "manual_daily_median_rate": -5},
         ],
@@ -180,8 +219,16 @@ def test_validate_tailored_settings_rejects_invalid_inputs_cleanly() -> None:
     assert "global median fallback must be greater than 0" in errors
     assert "maximum recommended rate must be greater than minimum acceptable rate" in errors
     assert "baseline occupancy sensitivity must be between 0.0 and 2.0" in errors
-    assert "update frequency must be one of: Every hour, Every 2 hours, Manual only" in errors
+    assert "update frequency must be one of: Every 30 minutes, Every hour, Every 2 hours, Daily, Manual only" in errors
     assert "manual daily median rate for 2026-07-02 must be greater than 0" in errors
+
+
+def test_thirty_minute_comp_rate_review_cadence_is_supported() -> None:
+    settings = update_median_rate(default_tailored_settings(), 150.0, updated_at=datetime(2026, 7, 1, 8, 0, 0))
+    settings["median_rate_update_frequency"] = "Every 30 minutes"
+
+    assert is_median_rate_stale(settings, reference_time=datetime(2026, 7, 1, 8, 31, 0)) is True
+    assert is_median_rate_stale(settings, reference_time=datetime(2026, 7, 1, 8, 20, 0)) is False
 
 
 def test_is_median_rate_stale_honors_review_cadence() -> None:

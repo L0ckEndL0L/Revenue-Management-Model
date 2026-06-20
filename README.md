@@ -1,91 +1,56 @@
-# Hotel Revenue Management Decision Support System
+# RateAnchor
 
-A Python and Streamlit capstone project that helps hotels clean PMS-style data, calculate KPIs, compare year-over-year performance, forecast demand, and produce explainable pricing recommendations.
+RateAnchor is a Streamlit capstone project for hotel revenue-management analysis. It cleans PMS-style data, validates required fields, forecasts demand, compares baseline and tailored pricing logic, and produces explainable rate recommendations that can be reviewed in a short advisor demo.
 
-The project supports both:
+## Main Features
 
-* A Streamlit dashboard for board review and interactive analysis
-* A CLI pipeline for repeatable local runs and testing
+* One-click demo mode using sample files included in the repository
+* CSV and Excel upload support for historical PMS and future on-books reports
+* PMS report cleaning for metadata rows, repeated headers, malformed CSVs, and common export quirks
+* Automated column mapping with manual fallback prompts in the UI
+* Data validation for required fields, invalid dates, missing values, negative values, and overbooking
+* Daily KPI output for occupancy, ADR, RevPAR, rooms sold, and room revenue
+* Future demand forecast and pricing simulation
+* Baseline recommendation output for comparison
+* Tailored recommendation settings with date-level median-rate controls
+* Dedicated comp-rate tab with monthly or daily comp-set median-rate entry
+* Event impact handling when event data is available
+* Budget comparison when daily or monthly budget data is available
+* Year-over-year comparison when prior-year reference data is available
+* Downloadable CSV, chart, and ZIP outputs
 
-## Capstone Board Access
+## Five-Minute Demo
 
-**Live Demo:** To be added after deployment.
+1. Run the app or open the deployed Streamlit app.
+2. In the sidebar, click **Load Demo Dataset**.
+3. Confirm the historical and future on-books previews appear.
+4. Click **Run Pricing Simulation**.
+5. Review Forecast, Baseline, Tailored Model, Rate Recommendations, YoY, Charts, and Downloads.
 
-Board review steps:
+Demo mode does not require manual uploads. Optional demo files such as events and budget data are loaded when present and skipped with a warning when absent.
+Use the **Comp Rate Controls** tab when you want to switch between one monthly comp-set median rate and separate daily comp rates.
 
-1. Open the web app.
-2. Click **Load Demo Dataset**.
-3. Click **Run Pricing Simulation**.
-4. Review **Outputs**, **Tailored Model**, **Rate Recommendations**, and **YoY** tabs.
+## Required Demo Files
 
-The demo workflow uses safe sample data included in this repository. It does not require private PMS files, saved datasets, generated outputs, or secrets.
-
-## Project Overview
-
-Hotels often rely on static pricing rules, manual spreadsheet updates, or once-daily rate reviews. Those workflows can make it difficult to react to occupancy pace, budget gaps, local events, and inconsistent PMS exports. This project provides an end-to-end workflow that standardizes hotel data, validates inputs, calculates performance metrics, and compares multiple pricing approaches in a repeatable way.
-
-## Key Features
-
-* CSV and Excel upload support
-* PMS-style report cleaning, including files with metadata/header rows
-* Automated and assisted column mapping
-* Historical and future on-the-books data handling
-* Safe demo dataset loader for Streamlit Community Cloud
-* Saved local datasets and budget profiles
-* Manual rooms-available override for reports missing inventory
-* Validation pipeline for required fields, missing values, invalid dates, and overbooking checks
-* Daily KPI calculations for occupancy, ADR, RevPAR, rooms sold, and room revenue
-* Year-over-year comparison output with missing-prior-year handling
-* Forecasting and backtesting workflow
-* Budget-aware pricing support
-* Event impact handling
-* Baseline once-daily pricing recommendations
-* Enhanced rate recommendation engine
-* Tailored model settings and day-by-day median rate inputs
-* Explainable recommendation outputs with confidence, warnings, and reasoning notes
-* CSV and chart exports for reporting
-
-## Demo Data
-
-The repository includes safe sample files for testing, demonstration, and board review:
+These files are required for demo mode:
 
 ```text
-data/
-|-- sample_data.csv
-|-- future_on_books_sample.csv
-|-- events_sample.csv
-|-- budget_daily_sample.csv
-|-- budget_monthly_sample.csv
-
-data/historical/
-|-- occupancy_2024.csv
+data/sample_data.csv
+data/future_on_books_sample.csv
 ```
 
-Additional local PMS exports, generated output folders, saved dashboard datasets, and secrets should remain outside version control.
+These files are optional and add richer outputs:
 
-## Web Deployment
-
-This app is prepared for Streamlit Community Cloud.
-
-Deployment steps:
-
-1. Push the repository to GitHub.
-2. Confirm only safe demo data is tracked.
-3. In Streamlit Community Cloud, create a new app from this repository.
-4. Set the app entry point to `app.py`.
-5. Deploy.
-6. Add the deployed URL to the **Live Demo** line above.
-
-The deployment config is in `.streamlit/config.toml`. Secrets should be stored only in Streamlit Cloud settings or a local `.streamlit/secrets.toml` file, which is ignored by git.
-
-## Local Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/L0ckEndL0L/Revenue-Management-Model.git
-cd Revenue-Management-Model
+```text
+data/events_sample.csv
+data/budget_daily_sample.csv
+data/budget_monthly_sample.csv
+data/historical/occupancy_2024.csv
 ```
+
+The demo loader resolves these files relative to the project root, so it works locally and on Streamlit Community Cloud without hardcoded local paths.
+
+## Run Locally
 
 Create and activate a virtual environment:
 
@@ -111,15 +76,19 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-## Run the Streamlit Dashboard
+Run the Streamlit app:
+
+```bash
+streamlit run app.py
+```
+
+You can also run it through Python:
 
 ```bash
 python -m streamlit run app.py
 ```
 
-The dashboard supports demo loading, file uploads, saved local datasets, budget inputs, field mapping, tailored settings, pipeline execution, charts, and downloadable outputs.
-
-## Run the CLI Pipeline
+## CLI Pipeline
 
 Basic run:
 
@@ -127,24 +96,25 @@ Basic run:
 python main.py --input data/sample_data.csv --output outputs
 ```
 
-Run with future on-books, events, and budget files:
+Run with demo future on-books, events, and budget files:
 
 ```bash
 python main.py \
   --input data/sample_data.csv \
   --future data/future_on_books_sample.csv \
   --events data/events_sample.csv \
-  --budget data/budget_monthly_sample.csv \
-  --output outputs
+  --budget data/budget_daily_sample.csv \
+  --output outputs \
+  --no-interactive
 ```
 
-Useful CLI options:
+Common options:
 
 ```text
 --input                     Historical PMS report. Required.
---future                    Optional future on-the-books report.
+--future                    Optional future on-books report.
 --events                    Optional events CSV.
---budget                    Optional budget file.
+--budget                    Optional daily or monthly budget file.
 --output                    Output directory. Defaults to outputs.
 --rate_floor                Minimum allowed recommendation rate.
 --rate_ceiling              Maximum allowed recommendation rate.
@@ -152,32 +122,45 @@ Useful CLI options:
 --elasticity                Demand elasticity assumption.
 --manual_rooms_available    Manual inventory override when reports omit rooms_available.
 --allow-overbooking         Allow rooms_sold to exceed rooms_available during validation.
---no-interactive            Disable interactive mapping behavior.
+--no-interactive            Disable terminal mapping prompts.
 ```
 
-## Main Outputs
+## Streamlit Community Cloud Deployment
 
-Each pipeline run creates a timestamped folder under `outputs/`. Common exported files include:
+1. Push this repository to GitHub.
+2. Confirm `app.py`, `requirements.txt`, `src/`, `ui/`, `tests/`, and safe demo files under `data/` are committed.
+3. In Streamlit Community Cloud, create a new app from the repository.
+4. Set the app entry point to `app.py`.
+5. Deploy.
+6. Open the deployed app and use **Load Demo Dataset** to confirm the Cloud build can run without local files.
 
-* `cleaned_data.csv`
-* `daily_metrics.csv`
-* `validation_report.txt`
-* `forecast.csv`
-* `yoy_comparison.csv`
-* `baseline_recommendations.csv`
-* `rate_recommendations.csv`
-* `tailored_model_results.csv`
-* `tailored_model_summary.csv`
-* `baseline_vs_new_policy.csv`
-* `evaluation_metrics.csv`
-* `forecast_vs_actual.csv`
-* `top_raise_opportunities.csv`
-* `top_rescue_dates.csv`
-* `top_monitor_dates.csv`
-* `current_vs_recommended_rate.png`
-* `expected_revenue_uplift.png`
-* `priority_score_by_date.png`
-* `forecast_vs_actual.png`
+No local `C:/Users/...` paths are required. Secrets are not needed for the demo workflow. If secrets are added later, store them in Streamlit Cloud settings or a local `.streamlit/secrets.toml` file that remains out of git.
+
+## Output Files
+
+Each run creates a timestamped folder under `outputs/`. Common outputs include:
+
+```text
+cleaned_data.csv
+daily_metrics.csv
+validation_report.txt
+forecast.csv
+yoy_comparison.csv
+baseline_recommendations.csv
+rate_recommendations.csv
+tailored_model_results.csv
+tailored_model_summary.csv
+baseline_vs_new_policy.csv
+evaluation_metrics.csv
+forecast_vs_actual.csv
+top_raise_opportunities.csv
+top_rescue_dates.csv
+top_monitor_dates.csv
+current_vs_recommended_rate.png
+expected_revenue_uplift.png
+priority_score_by_date.png
+forecast_vs_actual.png
+```
 
 ## Project Structure
 
@@ -186,49 +169,42 @@ Revenue-Management-Model/
 |-- app.py
 |-- main.py
 |-- requirements.txt
+|-- README.md
 |-- data/
+|-- src/
 |-- tests/
 |-- ui/
-|-- src/
-|   |-- baseline.py
-|   |-- budget.py
-|   |-- dataset_manager.py
-|   |-- elasticity.py
-|   |-- evaluation.py
-|   |-- events.py
-|   |-- forecast.py
-|   |-- ingest.py
-|   |-- metrics.py
-|   |-- pace.py
-|   |-- pricing.py
-|   |-- schema.py
-|   |-- tailored.py
-|   |-- validate.py
-|   |-- yoy.py
-|   |-- pipeline_budget_forecast.py
-|   |-- pipeline_config.py
-|   |-- pipeline_inputs.py
-|   |-- pipeline_outputs.py
-|   |-- pipeline_reporting.py
 ```
 
-## Validation and Testing
-
-Run compile checks:
-
-```bash
-python -m compileall src app.py main.py
-```
+## Testing
 
 Run the test suite:
 
 ```bash
-python -m pytest
+python -m pytest -q
 ```
 
-## Current Development Status
+Useful compile check:
 
-This is a working capstone and portfolio prototype. It demonstrates a full hotel revenue-management workflow from data import through explainable pricing recommendations. The project is not intended to replace a production RMS, but it is structured to show practical data cleaning, model comparison, business-rule design, validation, testing, and dashboard delivery.
+```bash
+python -m compileall src ui app.py main.py
+```
+
+## Current Project Status
+
+RateAnchor is ready for advisor review as a capstone prototype. It is designed to demonstrate data cleaning, validation, forecasting, baseline comparison, tailored pricing logic, budget context, event context, YoY comparison, and Streamlit delivery. It is not intended to replace a production RMS.
+
+## Week 9 Completed Work Summary
+
+* Fixed demo mode so included sample files can run the pricing simulation without manual uploads.
+* Ensured demo file paths are resolved relative to the repository root for local and Streamlit Community Cloud runs.
+* Added required-file errors and optional-file warnings for demo loading.
+* Preserved loaded dataset mappings through the same session-state keys used by uploaded data.
+* Kept validation intact while making static on-books demo files usable as simulation inputs.
+* Made month-mismatched optional budget files non-blocking for the pricing simulation.
+* Added model behavior checks for sparse-history and stronger-history properties, with low-data forecast fallback logic.
+* Updated app copy to use the RateAnchor name consistently.
+* Added regression tests for demo loading and sample pipeline compatibility.
 
 ## Author
 

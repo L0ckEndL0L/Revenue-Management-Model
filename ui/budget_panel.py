@@ -49,7 +49,8 @@ def build_daily_budget_template(start_date: pd.Timestamp, end_date: pd.Timestamp
 
 
 def render_budget_panel() -> tuple[pd.DataFrame | None, str]:
-    st.subheader("Budget Input")
+    st.subheader("Budget Comparison")
+    st.caption("Optional monthly or daily budget data adds variance and required-ADR context to the simulation.")
     budget_input_mode = st.radio(
         "Budget entry mode",
         options=["Upload spreadsheet", "Manual entry", "No budget"],
