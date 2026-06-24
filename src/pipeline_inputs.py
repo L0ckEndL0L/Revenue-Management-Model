@@ -125,5 +125,8 @@ def select_user_comparison_frames(
         return fallback_current, fallback_prior, fallback_prior, False
 
     future_metrics = calculate_daily_metrics(future_candidate)
-    uploaded_prior = build_uploaded_stly_reference(historical_metrics)
-    return future_metrics, historical_metrics, uploaded_prior, True
+    # For YoY, the uploaded historical file is the prior-year comparison.
+    # For forecast backtesting, STLY context must come from a year before the
+    # historical backtest target, not from the same historical file.
+    backtest_stly = repo_stly_df if repo_stly_df is not None and len(repo_stly_df) > 0 else None
+    return future_metrics, historical_metrics, backtest_stly, True

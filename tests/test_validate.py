@@ -25,21 +25,59 @@ def test_validate_data_blocks_overbooking_when_disabled() -> None:
     assert result.invalid_rows == 1
 
 
-def test_validate_data_fills_missing_current_rate() -> None:
+def test_validate_data_derives_missing_current_rate_from_report_adr_without_warning() -> None:
     df = pd.DataFrame(
         {
             "stay_date": pd.to_datetime(["2025-01-01"]),
             "rooms_available": [10],
             "rooms_sold": [5],
             "room_revenue": [500.0],
+            "adr": [100.0],
             "current_rate": [None],
         }
     )
 
-    cleaned, _ = validate_data(df, allow_overbooking=True, default_current_rate=120.0)
+    cleaned, result = validate_data(df, allow_overbooking=True, default_current_rate=120.0)
+
+    assert len(cleaned) == 1
+    assert cleaned.iloc[0]["current_rate"] == 100.0
+    assert not any(issue["issue_type"] == "CURRENT_RATE_FILLED" for issue in result.issues)
+
+
+def test_validate_data_derives_missing_current_rate_from_revenue_per_room_without_warning() -> None:
+    df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2025-01-01"]),
+            "rooms_available": [10],
+            "rooms_sold": [5],
+            "room_revenue": [550.0],
+            "current_rate": [None],
+        }
+    )
+
+    cleaned, result = validate_data(df, allow_overbooking=True, default_current_rate=120.0)
+
+    assert len(cleaned) == 1
+    assert cleaned.iloc[0]["current_rate"] == 110.0
+    assert not any(issue["issue_type"] == "CURRENT_RATE_FILLED" for issue in result.issues)
+
+
+def test_validate_data_fills_missing_current_rate_when_no_report_rate_available() -> None:
+    df = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2025-01-01"]),
+            "rooms_available": [10],
+            "rooms_sold": [0],
+            "room_revenue": [0.0],
+            "current_rate": [None],
+        }
+    )
+
+    cleaned, result = validate_data(df, allow_overbooking=True, default_current_rate=120.0)
 
     assert len(cleaned) == 1
     assert cleaned.iloc[0]["current_rate"] == 120.0
+    assert any(issue["issue_type"] == "CURRENT_RATE_FILLED" for issue in result.issues)
 
 
 def test_validate_required_fields_for_yoy_reports_missing_fields() -> None:

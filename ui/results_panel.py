@@ -57,6 +57,15 @@ def format_yoy_pair(current: float | None, prior: float | None, currency: bool =
     return f"{current:.{decimals}f}% vs {prior:.{decimals}f}%"
 
 
+def model_metric_value(metrics_df: pd.DataFrame, model: str, metric: str) -> float:
+    if metrics_df is None or len(metrics_df) == 0 or metric not in metrics_df.columns:
+        return float("nan")
+    row = metrics_df[metrics_df.get("model", pd.Series(dtype=str)) == model]
+    if len(row) == 0:
+        return float("nan")
+    return pd.to_numeric(row.iloc[0].get(metric), errors="coerce")
+
+
 def render_results(
     output_paths: Dict[str, str],
     summary: Dict,
@@ -148,6 +157,32 @@ def render_results(
     else:
         st.info("YoY data not available for this run. Add comparable STLY files under data/historical to enable YoY.")
 
+    model_comparison_df = safe_read_csv(output_paths.get("baseline_vs_tailored_model_metrics", ""))
+    subgroup_metrics_df = safe_read_csv(output_paths.get("subgroup_backtest_metrics", ""))
+    st.subheader("Baseline vs Tailored Model")
+    if model_comparison_df is not None and len(model_comparison_df) > 0:
+        b_mae = model_metric_value(model_comparison_df, "Baseline Model", "mae")
+        t_mae = model_metric_value(model_comparison_df, "Tailored Model", "mae")
+        b_rmse = model_metric_value(model_comparison_df, "Baseline Model", "rmse")
+        t_rmse = model_metric_value(model_comparison_df, "Tailored Model", "rmse")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Baseline MAE", f"{b_mae:.2f}")
+        m2.metric("Tailored MAE", f"{t_mae:.2f}", f"{t_mae - b_mae:+.2f}")
+        m3.metric("Baseline RMSE", f"{b_rmse:.2f}")
+        m4.metric("Tailored RMSE", f"{t_rmse:.2f}", f"{t_rmse - b_rmse:+.2f}")
+        st.dataframe(model_comparison_df, use_container_width=True)
+        st.caption("Lower MAE and RMSE indicate better historical backtest accuracy.")
+        warnings = model_comparison_df.get("validation_warning", pd.Series(dtype=str)).fillna("").astype(str)
+        warnings = [warning for warning in warnings.unique().tolist() if warning]
+        if warnings:
+            st.warning(" ".join(warnings))
+    else:
+        st.info("Baseline vs tailored backtest metrics are not available for this run.")
+
+    if subgroup_metrics_df is not None and len(subgroup_metrics_df) > 0:
+        st.caption("Subgroup analysis by property type, event period, month, and weekday/weekend.")
+        st.dataframe(subgroup_metrics_df, use_container_width=True)
+
     st.subheader("Outputs")
     tabs = st.tabs([
         "Forecast",
@@ -158,6 +193,8 @@ def render_results(
         "Top Rescue",
         "Top Monitor",
         "Evaluation",
+        "Baseline vs Tailored",
+        "Subgroups",
         "YoY",
     ])
 
@@ -189,6 +226,10 @@ def render_results(
         df = safe_read_csv(output_paths.get("evaluation_metrics", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
     with tabs[8]:
+        st.dataframe(model_comparison_df if model_comparison_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[9]:
+        st.dataframe(subgroup_metrics_df if subgroup_metrics_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[10]:
         st.dataframe(yoy_df if len(yoy_df) > 0 else pd.DataFrame(), use_container_width=True)
 
     st.subheader("Charts")
@@ -197,9 +238,38 @@ def render_results(
         rate_df = safe_read_csv(output_paths.get("rate_recommendations", ""))
         priority_df = safe_read_csv(output_paths.get("top_monitor_dates", ""))
         forecast_vs_actual_df = safe_read_csv(output_paths.get("forecast_vs_actual", ""))
+        model_comparison_df = safe_read_csv(output_paths.get("baseline_vs_tailored_model_metrics", ""))
+        subgroup_metrics_df = safe_read_csv(output_paths.get("subgroup_backtest_metrics", ""))
 
         ch1, ch2 = st.columns(2)
         with ch1:
+            if model_comparison_df is not None and {"model", "mae", "rmse"}.issubset(model_comparison_df.columns):
+                metric_chart_df = model_comparison_df.melt(
+                    id_vars=["model"],
+                    value_vars=["mae", "rmse"],
+                    var_name="metric",
+                    value_name="value",
+                )
+                metric_chart = (
+                    alt.Chart(metric_chart_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("model:N", title="Model"),
+                        y=alt.Y("value:Q", title="Error (Rooms Sold)"),
+                        color=alt.Color("metric:N", title="Metric"),
+                        xOffset="metric:N",
+                        tooltip=[
+                            alt.Tooltip("model:N", title="Model"),
+                            alt.Tooltip("metric:N", title="Metric"),
+                            alt.Tooltip("value:Q", title="Value", format=",.2f"),
+                        ],
+                    )
+                    .properties(title="Baseline vs Tailored Model Accuracy", height=320)
+                )
+                st.altair_chart(metric_chart, use_container_width=True)
+            else:
+                show_chart(run_dir / "baseline_vs_tailored_model_metrics.png", "Baseline vs Tailored Model Accuracy")
+
             if rate_df is not None and {"stay_date", "current_rate", "recommended_rate"}.issubset(rate_df.columns):
                 st.altair_chart(
                     interactive_line_chart(
@@ -253,6 +323,44 @@ def render_results(
                 st.altair_chart(yoy_chart, use_container_width=True)
 
         with ch2:
+            if subgroup_metrics_df is not None and {"property_type", "event_period", "model", "rmse"}.issubset(subgroup_metrics_df.columns):
+                subgroup_chart_df = subgroup_metrics_df.copy()
+                for col in ["month", "day_type"]:
+                    if col not in subgroup_chart_df.columns:
+                        subgroup_chart_df[col] = "Unspecified"
+                subgroup_chart_df["subgroup"] = (
+                    subgroup_chart_df["property_type"].astype(str)
+                    + " | "
+                    + subgroup_chart_df["event_period"].astype(str)
+                    + " | "
+                    + subgroup_chart_df["month"].astype(str)
+                    + " | "
+                    + subgroup_chart_df["day_type"].astype(str)
+                )
+                subgroup_chart = (
+                    alt.Chart(subgroup_chart_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("subgroup:N", title="Property Type | Event Period | Month | Day Type", sort=None),
+                        y=alt.Y("rmse:Q", title="RMSE (Rooms Sold)"),
+                        color=alt.Color("model:N", title="Model"),
+                        xOffset="model:N",
+                        tooltip=[
+                            alt.Tooltip("property_type:N", title="Property Type"),
+                            alt.Tooltip("event_period:N", title="Event Period"),
+                            alt.Tooltip("month:N", title="Month"),
+                            alt.Tooltip("day_type:N", title="Day Type"),
+                            alt.Tooltip("model:N", title="Model"),
+                            alt.Tooltip("rmse:Q", title="RMSE", format=",.2f"),
+                            alt.Tooltip("mae:Q", title="MAE", format=",.2f"),
+                        ],
+                    )
+                    .properties(title="Subgroup Backtest RMSE", height=320)
+                )
+                st.altair_chart(subgroup_chart, use_container_width=True)
+            else:
+                show_chart(run_dir / "subgroup_backtest_metrics.png", "Subgroup Backtest RMSE")
+
             if rate_df is not None and {"stay_date", "uplift_vs_current"}.issubset(rate_df.columns):
                 st.altair_chart(
                     interactive_bar_chart(
@@ -287,11 +395,13 @@ def render_results(
     else:
         ch1, ch2 = st.columns(2)
         with ch1:
+            show_chart(run_dir / "baseline_vs_tailored_model_metrics.png", "Baseline vs Tailored Model Accuracy")
             show_chart(run_dir / "current_vs_recommended_rate.png", "Current vs Recommended Rate")
             show_chart(run_dir / "priority_score_by_date.png", "Priority Score by Date")
             if len(yoy_df) > 0:
                 st.info("YoY Occupancy Comparison is available when interactive charts are enabled.")
         with ch2:
+            show_chart(run_dir / "subgroup_backtest_metrics.png", "Subgroup Backtest RMSE")
             show_chart(run_dir / "expected_revenue_uplift.png", "Expected Revenue Uplift")
             show_chart(run_dir / "forecast_vs_actual.png", "Forecast vs Actual")
 
@@ -306,6 +416,8 @@ def render_results(
         "top_rescue_dates",
         "top_monitor_dates",
         "evaluation_metrics",
+        "baseline_vs_tailored_model_metrics",
+        "subgroup_backtest_metrics",
         "baseline_vs_new_policy",
         "yoy_comparison",
     ]:

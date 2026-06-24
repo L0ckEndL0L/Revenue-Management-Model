@@ -87,7 +87,8 @@ def validate_data(
     - rooms_sold cannot exceed rooms_available (unless overbooking allowed)
     - room_revenue must be non-negative
     - missing room_revenue is allowed on future dates
-    - missing current_rate is filled with fallback and logged
+    - missing current_rate is derived from ADR or revenue per room when available
+    - missing current_rate is filled with fallback and logged only when report-native rate fields are unavailable
     
     Args:
         df: DataFrame with canonical columns
@@ -177,13 +178,19 @@ def validate_data(
 
         current_rate = row.get('current_rate', pd.NA)
         if pd.isna(current_rate) or float(current_rate) <= 0:
-            df_clean.at[idx, 'current_rate'] = float(fallback_rate)
-            result.add_issue(
-                idx,
-                'current_rate',
-                'CURRENT_RATE_FILLED',
-                f'current_rate missing; filled with fallback value {float(fallback_rate):.2f}',
-            )
+            adr_value = row.get('adr', pd.NA)
+            if pd.notna(adr_value) and float(adr_value) > 0:
+                df_clean.at[idx, 'current_rate'] = float(adr_value)
+            elif pd.notna(room_revenue) and float(row.get('rooms_sold', 0)) > 0:
+                df_clean.at[idx, 'current_rate'] = float(room_revenue) / float(row['rooms_sold'])
+            else:
+                df_clean.at[idx, 'current_rate'] = float(fallback_rate)
+                result.add_issue(
+                    idx,
+                    'current_rate',
+                    'CURRENT_RATE_FILLED',
+                    f'current_rate missing; filled with fallback value {float(fallback_rate):.2f}',
+                )
         
         # Mark row for removal if it has critical issues
         if has_issues:

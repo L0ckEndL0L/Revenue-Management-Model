@@ -9,14 +9,18 @@ import pandas as pd
 
 from src.elasticity import expected_rooms_sold
 from src.evaluation import (
+    build_model_comparison_metrics,
     build_policy_evaluation_metrics,
+    build_subgroup_backtest_metrics,
     calculate_forecast_metrics,
     plot_current_vs_recommended_rate,
     plot_expected_revenue_uplift,
     plot_forecast_vs_actual,
+    plot_model_comparison_metrics,
     plot_priority_score_by_date,
+    plot_subgroup_backtest_metrics,
 )
-from src.forecast import baseline_forecast, enhanced_forecast, evaluate_backtest, prepare_forecast_frame
+from src.forecast import baseline_forecast, calibrated_tailored_forecast, evaluate_backtest, prepare_forecast_frame
 from src.pricing import PricingConfig, simulate_elasticity_pricing
 
 
@@ -127,14 +131,27 @@ def write_evaluation_outputs(
     as_of_date: pd.Timestamp,
     baseline_rules_df: pd.DataFrame,
     elasticity: float,
-) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path]:
+    tailored_settings: dict | None = None,
+) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path, Path, Path, Path]:
     """Write evaluation CSV outputs and return chart-ready forecast data."""
     model_df = prepare_forecast_frame(daily_df=historical_metrics, events_df=events_df, stly_df=stly_df)
+    default_property_type = str((tailored_settings or {}).get("property_type", "Unspecified")).strip() or "Unspecified"
+    if "property_type" not in model_df.columns:
+        model_df["property_type"] = default_property_type
+    else:
+        model_df["property_type"] = model_df["property_type"].fillna(default_property_type)
     backtest_df = evaluate_backtest(model_df=model_df, as_of_date=as_of_date)
     forecast_metrics = calculate_forecast_metrics(
         actual=backtest_df.get("actual_rooms_sold", pd.Series(dtype=float)),
         predicted=backtest_df.get("baseline_rooms_sold", pd.Series(dtype=float)),
     )
+    model_comparison_df = build_model_comparison_metrics(backtest_df)
+    model_comparison_path = output_dir / "baseline_vs_tailored_model_metrics.csv"
+    model_comparison_df.to_csv(model_comparison_path, index=False)
+
+    subgroup_metrics_df = build_subgroup_backtest_metrics(backtest_df)
+    subgroup_metrics_path = output_dir / "subgroup_backtest_metrics.csv"
+    subgroup_metrics_df.to_csv(subgroup_metrics_path, index=False)
 
     baseline_vs_new_df = build_baseline_vs_new_policy(historical_metrics, baseline_rules_df, elasticity=elasticity)
     baseline_vs_new_path = output_dir / "baseline_vs_new_policy.csv"
@@ -146,7 +163,7 @@ def write_evaluation_outputs(
     evaluation_metrics_df.to_csv(evaluation_metrics_path, index=False)
 
     full_baseline_pred = baseline_forecast(train_df=model_df, target_df=model_df)
-    full_enhanced_pred = enhanced_forecast(train_df=model_df, target_df=model_df)
+    full_enhanced_pred = calibrated_tailored_forecast(train_df=model_df, target_df=model_df)
     full_forecast_vs_actual_df = pd.DataFrame(
         {
             "stay_date": model_df["stay_date"],
@@ -170,6 +187,8 @@ def write_evaluation_outputs(
         evaluation_metrics_path,
         baseline_vs_new_path,
         forecast_vs_actual_csv_path,
+        model_comparison_path,
+        subgroup_metrics_path,
     )
 
 
@@ -179,9 +198,15 @@ def write_chart_outputs(
     recommendations_df: pd.DataFrame,
     priority_full_df: pd.DataFrame,
     forecast_vs_actual_df: pd.DataFrame,
+    model_comparison_df: pd.DataFrame | None = None,
+    subgroup_metrics_df: pd.DataFrame | None = None,
 ) -> None:
     """Write the PNG chart outputs expected by the app and CLI."""
     plot_current_vs_recommended_rate(recommendations_df, str(output_dir / "current_vs_recommended_rate.png"))
     plot_expected_revenue_uplift(recommendations_df, str(output_dir / "expected_revenue_uplift.png"))
     plot_priority_score_by_date(priority_full_df, str(output_dir / "priority_score_by_date.png"))
     plot_forecast_vs_actual(forecast_vs_actual_df, str(output_dir / "forecast_vs_actual.png"))
+    if model_comparison_df is not None:
+        plot_model_comparison_metrics(model_comparison_df, str(output_dir / "baseline_vs_tailored_model_metrics.png"))
+    if subgroup_metrics_df is not None:
+        plot_subgroup_backtest_metrics(subgroup_metrics_df, str(output_dir / "subgroup_backtest_metrics.png"))

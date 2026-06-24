@@ -106,6 +106,8 @@ def collect_output_paths(
     evaluation_metrics_path: Path,
     baseline_vs_new_path: Path,
     forecast_vs_actual_csv_path: Path,
+    model_comparison_path: Path,
+    subgroup_metrics_path: Path,
 ) -> dict[str, str]:
     """Return the public output path mapping used by CLI and Streamlit."""
     return {
@@ -125,6 +127,8 @@ def collect_output_paths(
         "evaluation_metrics": str(evaluation_metrics_path),
         "baseline_vs_new_policy": str(baseline_vs_new_path),
         "forecast_vs_actual": str(forecast_vs_actual_csv_path),
+        "baseline_vs_tailored_model_metrics": str(model_comparison_path),
+        "subgroup_backtest_metrics": str(subgroup_metrics_path),
     }
 
 
@@ -139,9 +143,10 @@ def build_pipeline_summary(
     projected_uplift: float,
     top_raise_df: pd.DataFrame,
     tailored_summary_df: pd.DataFrame,
+    model_comparison_df: pd.DataFrame | None = None,
 ) -> dict:
     """Build the public summary payload returned by run_pipeline."""
-    return {
+    summary = {
         "budget_summary": budget_summary,
         "forecast_metrics": forecast_metrics,
         "yoy_summary": yoy_summary,
@@ -153,3 +158,6 @@ def build_pipeline_summary(
         "heavy_need_days": int(len(top_raise_df)),
         "tailored_summary": tailored_summary_df.iloc[0].to_dict() if len(tailored_summary_df) else {},
     }
+    if model_comparison_df is not None and len(model_comparison_df) > 0:
+        summary["model_comparison"] = model_comparison_df.to_dict("records")
+    return summary

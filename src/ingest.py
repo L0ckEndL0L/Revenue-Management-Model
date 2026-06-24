@@ -4,6 +4,7 @@ Handles data ingestion from CSV and Excel files, including column mapping.
 """
 
 import csv
+import io
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -73,6 +74,88 @@ def _find_report_header_row(raw_df: pd.DataFrame, scan_limit: int = 25) -> int |
     return None
 
 
+def _find_report_header_row_in_rows(rows: list[list[str]], scan_limit: int = 25) -> int | None:
+    max_rows = min(scan_limit, len(rows))
+    for i in range(max_rows):
+        row_values = [str(v).strip().lower() for v in rows[i]]
+        if "date" in row_values and (
+            "room revenue" in row_values
+            or "occupancy %" in row_values
+            or "occupancy" in row_values
+            or "rooms sold" in row_values
+        ):
+            return i
+    return None
+
+
+def _read_csv_rows(file_source) -> list[list[str]]:
+    _reset_file_source(file_source)
+    if isinstance(file_source, (str, Path)):
+        with open(file_source, "r", encoding="utf-8-sig", newline="") as handle:
+            return list(csv.reader(handle))
+
+    content = file_source.read()
+    if isinstance(content, bytes):
+        content = content.decode("utf-8-sig")
+    return list(csv.reader(io.StringIO(content)))
+
+
+def _looks_like_percent(value: str) -> bool:
+    text = str(value).strip().replace("%", "")
+    try:
+        numeric = float(text)
+    except ValueError:
+        return False
+    return 0.0 <= numeric <= 150.0
+
+
+def _looks_like_count(value: str) -> bool:
+    text = str(value).strip().replace(",", "")
+    try:
+        numeric = float(text)
+    except ValueError:
+        return False
+    return numeric >= 0 and numeric.is_integer()
+
+
+def _looks_like_currency(value: str) -> bool:
+    return "$" in str(value)
+
+
+def _read_aligned_report_csv(file_source) -> pd.DataFrame | None:
+    """Read PMS CSV exports with omitted blank placeholders in some rows."""
+    rows = _read_csv_rows(file_source)
+    header_row = _find_report_header_row_in_rows(rows)
+    if header_row is None:
+        return None
+
+    header = [str(v).strip() for v in rows[header_row]]
+    header_len = len(header)
+    has_blank_after_date = header_len > 2 and header[0].strip().lower() == "date" and header[1].strip() == ""
+
+    normalized_rows: list[list[str]] = []
+    for raw_row in rows[header_row + 1 :]:
+        if not any(str(v).strip() for v in raw_row):
+            continue
+
+        row = [str(v).strip() for v in raw_row]
+        if has_blank_after_date and len(row) > 2 and row[1].strip() and _looks_like_percent(row[1]) and _looks_like_count(row[2]):
+            row.insert(1, "")
+
+        while len(row) > header_len and len(row) >= 2 and row[-2].strip() == "" and _looks_like_currency(row[-1]):
+            row.pop(-2)
+
+        if len(row) < header_len:
+            row.extend([""] * (header_len - len(row)))
+        elif len(row) > header_len:
+            row = row[:header_len]
+
+        normalized_rows.append(row)
+
+    aligned = pd.DataFrame(normalized_rows, columns=header)
+    return clean_report_dataframe(aligned)
+
+
 def _promote_embedded_header_row(df: pd.DataFrame, scan_limit: int = 25) -> pd.DataFrame:
     """Promote an in-file header row when metadata was parsed as the DataFrame header."""
     if df.empty:
@@ -133,6 +216,87 @@ def _make_unique_column_names(columns: list[str]) -> list[str]:
     return unique
 
 
+def _clean_numeric_text(series: pd.Series) -> pd.Series:
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    return (
+        series.astype(str)
+        .str.replace(r'[$,]', '', regex=True)
+        .str.replace('%', '', regex=False)
+        .str.replace(' ', '', regex=False)
+        .str.strip()
+        .replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
+    )
+
+
+def _numeric_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(_clean_numeric_text(series), errors='coerce')
+
+
+def _column_has_currency_values(series: pd.Series) -> bool:
+    return bool(series.astype(str).str.contains(r'\$', regex=True, na=False).sum() > 0)
+
+
+def _repair_shifted_currency_column(
+    df: pd.DataFrame,
+    target_col: str,
+    *,
+    min_median: float,
+    max_median: float | None = None,
+    search_radius: int = 2,
+) -> pd.DataFrame:
+    """Repair PMS CSV exports where currency values sit beside their header."""
+    if target_col not in df.columns:
+        return df
+
+    repaired = df.copy()
+    target_numeric = _numeric_series(repaired[target_col])
+    target_hits = int(target_numeric.notna().sum())
+    target_fill_ratio = target_hits / max(len(repaired), 1)
+    target_positive = target_numeric[target_numeric > 0]
+    target_median = float(target_positive.median()) if len(target_positive) else 0.0
+
+    target_needs_repair = target_fill_ratio < 0.85 or target_median < min_median
+    if max_median is not None and target_median > max_median:
+        target_needs_repair = True
+    if not target_needs_repair:
+        return repaired
+
+    columns = list(repaired.columns)
+    target_idx = columns.index(target_col)
+    candidate_cols = []
+    for idx in range(max(0, target_idx - search_radius), min(len(columns), target_idx + search_radius + 1)):
+        candidate = columns[idx]
+        if candidate == target_col:
+            continue
+        if not _column_has_currency_values(repaired[candidate]):
+            continue
+        numeric = _numeric_series(repaired[candidate])
+        positive = numeric[numeric > 0]
+        if len(positive) == 0:
+            continue
+        median_value = float(positive.median())
+        if median_value < min_median:
+            continue
+        if max_median is not None and median_value > max_median:
+            continue
+        candidate_cols.append(candidate)
+
+    if not candidate_cols:
+        return repaired
+
+    candidate_cols = sorted(
+        candidate_cols,
+        key=lambda col: (
+            int(_numeric_series(repaired[col]).notna().sum()),
+            abs(columns.index(col) - target_idx),
+        ),
+        reverse=True,
+    )
+    repaired[target_col] = target_numeric.combine_first(_numeric_series(repaired[candidate_cols[0]]))
+    return repaired
+
+
 def clean_report_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Apply lightweight cleaning for PMS report-shaped tabular data."""
     if df.empty:
@@ -144,6 +308,8 @@ def clean_report_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = cleaned.dropna(how="all")
     cleaned = cleaned.dropna(axis=1, how="all")
     cleaned = _drop_report_artifact_rows(cleaned)
+    cleaned = _repair_shifted_currency_column(cleaned, "Room Revenue", min_median=300.0)
+    cleaned = _repair_shifted_currency_column(cleaned, "ADR", min_median=20.0, max_median=500.0)
 
     return cleaned.reset_index(drop=True)
 
@@ -183,6 +349,10 @@ def read_table_source(file_source, filename: str | None = None) -> pd.DataFrame:
 
     if suffix == ".csv":
         def _try_read_csv(source) -> pd.DataFrame:
+            aligned_report = _read_aligned_report_csv(source)
+            if aligned_report is not None:
+                return aligned_report
+
             _reset_file_source(source)
             local_df = pd.read_csv(source)
 
@@ -598,6 +768,8 @@ def convert_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
             .replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
         )
 
+    rooms_available_from_source = 'rooms_available' in df.columns
+
     # Integer columns
     int_columns = ['rooms_available', 'rooms_sold']
     for col in int_columns:
@@ -620,6 +792,9 @@ def convert_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
         df['occupancy_percent'] = pd.to_numeric(_clean_numeric_text(df['occupancy_percent']), errors='coerce')
         df['occupancy_percent'] = df['occupancy_percent'].fillna(0.0).astype('float64')
 
+    if 'rooms_available_derived_from_occupancy' not in df.columns:
+        df['rooms_available_derived_from_occupancy'] = False
+
     if 'rooms_available' not in df.columns and {'rooms_sold', 'occupancy_percent'}.issubset(df.columns):
         occ_ratio = df['occupancy_percent'].copy()
         occ_ratio = occ_ratio.where(occ_ratio <= 1.0, occ_ratio / 100.0)
@@ -627,6 +802,7 @@ def convert_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
         valid = occ_ratio > 0
         derived.loc[valid] = (df.loc[valid, 'rooms_sold'] / occ_ratio.loc[valid]).round().astype('int64')
         df['rooms_available'] = derived
+        df['rooms_available_derived_from_occupancy'] = valid
 
     if {'rooms_available', 'rooms_sold', 'occupancy_percent'}.issubset(df.columns):
         missing_or_zero = df['rooms_available'] <= 0
@@ -637,6 +813,10 @@ def convert_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
             df.loc[valid, 'rooms_available'] = (
                 (df.loc[valid, 'rooms_sold'] / occ_ratio.loc[valid]).round().astype('int64')
             )
+            df.loc[valid, 'rooms_available_derived_from_occupancy'] = True
+
+    if rooms_available_from_source:
+        df['rooms_available_derived_from_occupancy'] = df['rooms_available_derived_from_occupancy'].astype(bool)
     
     return df
 

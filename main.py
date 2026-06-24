@@ -78,6 +78,7 @@ def run_pipeline(
     # Optional manual override for total inventory.
     if manual_rooms_available is not None:
         historical_df["rooms_available"] = int(manual_rooms_available)
+        historical_df["rooms_available_derived_from_occupancy"] = False
 
     _, _, as_of_date = current_month_context()
 
@@ -280,6 +281,8 @@ def run_pipeline(
         evaluation_metrics_path,
         baseline_vs_new_path,
         forecast_vs_actual_csv_path,
+        model_comparison_path,
+        subgroup_metrics_path,
     ) = write_evaluation_outputs(
         output_dir=output_dir,
         historical_metrics=historical_metrics,
@@ -288,6 +291,7 @@ def run_pipeline(
         as_of_date=as_of_date,
         baseline_rules_df=baseline_rules_df,
         elasticity=elasticity,
+        tailored_settings=config.get("tailored_settings"),
     )
 
     write_chart_outputs(
@@ -295,6 +299,8 @@ def run_pipeline(
         recommendations_df=recommendations_df,
         priority_full_df=priority_full_df,
         forecast_vs_actual_df=full_forecast_vs_actual_df,
+        model_comparison_df=pd.read_csv(model_comparison_path),
+        subgroup_metrics_df=pd.read_csv(subgroup_metrics_path),
     )
 
     output_paths = collect_output_paths(
@@ -314,6 +320,8 @@ def run_pipeline(
         evaluation_metrics_path=evaluation_metrics_path,
         baseline_vs_new_path=baseline_vs_new_path,
         forecast_vs_actual_csv_path=forecast_vs_actual_csv_path,
+        model_comparison_path=model_comparison_path,
+        subgroup_metrics_path=subgroup_metrics_path,
     )
 
     summary = build_pipeline_summary(
@@ -326,6 +334,7 @@ def run_pipeline(
         projected_uplift=projected_uplift,
         top_raise_df=top_raise_df,
         tailored_summary_df=tailored_summary_df,
+        model_comparison_df=pd.read_csv(model_comparison_path),
     )
 
     return output_paths, summary
