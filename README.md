@@ -16,6 +16,7 @@ RateAnchor is a Streamlit capstone project for hotel revenue-management analysis
 * Property-type presets that change operating posture for luxury, resort, boutique, full-service, limited-service, select-service, extended-stay, and economy properties
 * Segment-focus presets that materially change tailored pricing posture for revenue, occupancy, corporate, group, premium, and leisure strategies
 * Dedicated comp-rate tab with monthly, daily, and mock comp-set median-rate inputs
+* Intraday comp-set update replay with timestamped recommendation-change tracking
 * Property/dataset switcher for moving between the demo property and saved property datasets
 * Event impact handling when event data is available
 * Budget comparison when daily or monthly budget data is available
@@ -32,6 +33,7 @@ RateAnchor is a Streamlit capstone project for hotel revenue-management analysis
 
 Demo mode does not require manual uploads. Optional demo files such as events and budget data are loaded when present and skipped with a warning when absent.
 Use the **Comp Rate Controls** tab when you want to switch between one monthly comp-set median rate, separate daily comp rates, or the included mock comp-set rate-shop file.
+Use the optional intraday update uploader in that same tab to replay multiple comp-set updates for the same stay date in timestamp order.
 Use the **Property Switcher** in the sidebar to move between the included demo property and saved property datasets.
 
 ## Required Demo Files
@@ -50,6 +52,7 @@ data/events_sample.csv
 data/budget_daily_sample.csv
 data/budget_monthly_sample.csv
 data/comp_set_sample.csv
+data/intraday_comp_set_updates_sample.csv
 data/historical/occupancy_2024.csv
 ```
 
@@ -158,6 +161,10 @@ tailored_model_summary.csv
 baseline_vs_new_policy.csv
 evaluation_metrics.csv
 forecast_vs_actual.csv
+intraday_recommendation_changes.csv
+rate_backtest_results.csv
+rate_backtest_metrics.csv
+rate_subgroup_backtest_metrics.csv
 top_raise_opportunities.csv
 top_rescue_dates.csv
 top_monitor_dates.csv
@@ -166,6 +173,18 @@ expected_revenue_uplift.png
 priority_score_by_date.png
 forecast_vs_actual.png
 ```
+
+## Week 10: Intraday Update Workflow
+
+RateAnchor supports multiple comp-set or market updates for the same stay date. Intraday update rows use `stay_date`, `update_timestamp`, `manual_daily_median_rate`, and optional `reason_summary`; updates are sorted by stay date and timestamp, replayed in order, and written to `intraday_recommendation_changes.csv` with old rate, new rate, absolute change, percent change, median rate used, model status, and summary.
+
+In Streamlit, load the demo dataset or upload an intraday update file from **Comp Rate Controls**, then run the simulation and review **Intraday Recommendation Changes** or the **Intraday** output tab.
+
+## Week 11: Backtesting and Evaluation
+
+Historical rate backtesting compares actual ADR/rate against the baseline recommendation and RateAnchor tailored recommendation. The pipeline writes `rate_backtest_results.csv`, `rate_backtest_metrics.csv`, and `rate_subgroup_backtest_metrics.csv`, including MAE, RMSE, differences/improvement versus baseline, and subgroup analysis by property type and event period.
+
+In Streamlit, review the **Rate Backtesting** summary and **Rate Backtest** output tab after a run.
 
 ## Project Structure
 

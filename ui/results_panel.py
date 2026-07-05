@@ -159,6 +159,9 @@ def render_results(
 
     model_comparison_df = safe_read_csv(output_paths.get("baseline_vs_tailored_model_metrics", ""))
     subgroup_metrics_df = safe_read_csv(output_paths.get("subgroup_backtest_metrics", ""))
+    rate_backtest_metrics_df = safe_read_csv(output_paths.get("rate_backtest_metrics", ""))
+    rate_subgroup_metrics_df = safe_read_csv(output_paths.get("rate_subgroup_backtest_metrics", ""))
+    intraday_changes_df = safe_read_csv(output_paths.get("intraday_recommendation_changes", ""))
     st.subheader("Baseline vs Tailored Model")
     if model_comparison_df is not None and len(model_comparison_df) > 0:
         b_mae = model_metric_value(model_comparison_df, "Baseline Model", "mae")
@@ -183,6 +186,19 @@ def render_results(
         st.caption("Subgroup analysis by property type, event period, month, and weekday/weekend.")
         st.dataframe(subgroup_metrics_df, use_container_width=True)
 
+    st.subheader("Rate Backtesting")
+    if rate_backtest_metrics_df is not None and len(rate_backtest_metrics_df) > 0:
+        st.dataframe(rate_backtest_metrics_df, use_container_width=True)
+        st.caption("Actual ADR/rate is compared against baseline and RateAnchor tailored recommendations. Negative differences mean lower error than baseline.")
+    else:
+        st.info("Rate backtest metrics are not available for this run.")
+
+    if intraday_changes_df is not None and len(intraday_changes_df) > 0:
+        st.subheader("Intraday Recommendation Changes")
+        st.dataframe(intraday_changes_df, use_container_width=True)
+    elif summary.get("intraday_update_warnings"):
+        st.warning("Intraday updates skipped: " + "; ".join(summary["intraday_update_warnings"]))
+
     st.subheader("Outputs")
     tabs = st.tabs([
         "Forecast",
@@ -195,6 +211,8 @@ def render_results(
         "Evaluation",
         "Baseline vs Tailored",
         "Subgroups",
+        "Rate Backtest",
+        "Intraday",
         "YoY",
     ])
 
@@ -230,6 +248,14 @@ def render_results(
     with tabs[9]:
         st.dataframe(subgroup_metrics_df if subgroup_metrics_df is not None else pd.DataFrame(), use_container_width=True)
     with tabs[10]:
+        rate_backtest_df = safe_read_csv(output_paths.get("rate_backtest_results", ""))
+        if rate_backtest_df is not None:
+            st.dataframe(rate_backtest_df, use_container_width=True)
+        if rate_subgroup_metrics_df is not None:
+            st.dataframe(rate_subgroup_metrics_df, use_container_width=True)
+    with tabs[11]:
+        st.dataframe(intraday_changes_df if intraday_changes_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[12]:
         st.dataframe(yoy_df if len(yoy_df) > 0 else pd.DataFrame(), use_container_width=True)
 
     st.subheader("Charts")
@@ -418,6 +444,10 @@ def render_results(
         "evaluation_metrics",
         "baseline_vs_tailored_model_metrics",
         "subgroup_backtest_metrics",
+        "rate_backtest_results",
+        "rate_backtest_metrics",
+        "rate_subgroup_backtest_metrics",
+        "intraday_recommendation_changes",
         "baseline_vs_new_policy",
         "yoy_comparison",
     ]:

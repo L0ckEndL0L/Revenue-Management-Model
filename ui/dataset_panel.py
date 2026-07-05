@@ -22,6 +22,7 @@ DEMO_OPTIONAL_FILES = {
     "daily_budget": "budget_daily_sample.csv",
     "monthly_budget": "budget_monthly_sample.csv",
     "comp_set": "comp_set_sample.csv",
+    "intraday_updates": "intraday_comp_set_updates_sample.csv",
 }
 
 
@@ -56,6 +57,7 @@ def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
     future_df = read_table_source(_demo_file_path(DEMO_REQUIRED_FILES["future"]))
     events_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["events"], warnings)
     comp_set_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["comp_set"], warnings)
+    intraday_updates_df = _load_optional_demo_table(DEMO_OPTIONAL_FILES["intraday_updates"], warnings)
 
     budget_df = None
     daily_budget_path = _demo_file_path(DEMO_OPTIONAL_FILES["daily_budget"])
@@ -73,6 +75,7 @@ def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
         "future_df": future_df,
         "events_df": events_df,
         "comp_set_df": comp_set_df,
+        "intraday_updates_df": intraday_updates_df,
         "budget_df": budget_df,
         "historical_mapping": auto_map_columns(historical_df),
         "future_mapping": auto_map_columns(future_df),
@@ -86,6 +89,7 @@ def _load_demo_dataset() -> list[str]:
     st.session_state.future_df = payload["future_df"]
     st.session_state.events_df = payload["events_df"]
     st.session_state.comp_set_df = payload["comp_set_df"]
+    st.session_state.intraday_updates_df = payload["intraday_updates_df"]
     st.session_state.budget_df = payload["budget_df"]
     st.session_state.historical_mapping = payload["historical_mapping"]
     st.session_state.future_mapping = payload["future_mapping"]

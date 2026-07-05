@@ -221,6 +221,7 @@ def _run_dashboard() -> None:
                     "manual_rooms_available": pricing_config["manual_rooms_available"],
                     "tailored_settings": tailored_settings,
                     "comp_set_df": st.session_state.get("comp_set_df"),
+                    "intraday_updates_df": st.session_state.get("intraday_updates_df"),
                 },
             )
             status.update(label="Simulation complete", state="complete")

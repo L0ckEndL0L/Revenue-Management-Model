@@ -9,6 +9,9 @@ import pandas as pd
 
 from src.elasticity import expected_rooms_sold
 from src.evaluation import (
+    build_rate_backtest_frame,
+    build_rate_backtest_metrics,
+    build_rate_subgroup_backtest_metrics,
     build_model_comparison_metrics,
     build_policy_evaluation_metrics,
     build_subgroup_backtest_metrics,
@@ -132,7 +135,7 @@ def write_evaluation_outputs(
     baseline_rules_df: pd.DataFrame,
     elasticity: float,
     tailored_settings: dict | None = None,
-) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path, Path, Path, Path]:
+) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path, Path, Path, Path, Path, Path, Path]:
     """Write evaluation CSV outputs and return chart-ready forecast data."""
     model_df = prepare_forecast_frame(daily_df=historical_metrics, events_df=events_df, stly_df=stly_df)
     default_property_type = str((tailored_settings or {}).get("property_type", "Unspecified")).strip() or "Unspecified"
@@ -152,6 +155,22 @@ def write_evaluation_outputs(
     subgroup_metrics_df = build_subgroup_backtest_metrics(backtest_df)
     subgroup_metrics_path = output_dir / "subgroup_backtest_metrics.csv"
     subgroup_metrics_df.to_csv(subgroup_metrics_path, index=False)
+
+    rate_backtest_df = build_rate_backtest_frame(
+        historical_df=historical_metrics,
+        events_df=events_df,
+        tailored_settings=tailored_settings,
+    )
+    rate_backtest_path = output_dir / "rate_backtest_results.csv"
+    rate_backtest_df.to_csv(rate_backtest_path, index=False)
+
+    rate_backtest_metrics_df = build_rate_backtest_metrics(rate_backtest_df)
+    rate_backtest_metrics_path = output_dir / "rate_backtest_metrics.csv"
+    rate_backtest_metrics_df.to_csv(rate_backtest_metrics_path, index=False)
+
+    rate_subgroup_metrics_df = build_rate_subgroup_backtest_metrics(rate_backtest_df)
+    rate_subgroup_metrics_path = output_dir / "rate_subgroup_backtest_metrics.csv"
+    rate_subgroup_metrics_df.to_csv(rate_subgroup_metrics_path, index=False)
 
     baseline_vs_new_df = build_baseline_vs_new_policy(historical_metrics, baseline_rules_df, elasticity=elasticity)
     baseline_vs_new_path = output_dir / "baseline_vs_new_policy.csv"
@@ -189,6 +208,9 @@ def write_evaluation_outputs(
         forecast_vs_actual_csv_path,
         model_comparison_path,
         subgroup_metrics_path,
+        rate_backtest_path,
+        rate_backtest_metrics_path,
+        rate_subgroup_metrics_path,
     )
 
 

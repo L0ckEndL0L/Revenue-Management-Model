@@ -108,6 +108,10 @@ def collect_output_paths(
     forecast_vs_actual_csv_path: Path,
     model_comparison_path: Path,
     subgroup_metrics_path: Path,
+    rate_backtest_path: Path,
+    rate_backtest_metrics_path: Path,
+    rate_subgroup_metrics_path: Path,
+    intraday_updates_path: Path | None = None,
 ) -> dict[str, str]:
     """Return the public output path mapping used by CLI and Streamlit."""
     return {
@@ -129,6 +133,10 @@ def collect_output_paths(
         "forecast_vs_actual": str(forecast_vs_actual_csv_path),
         "baseline_vs_tailored_model_metrics": str(model_comparison_path),
         "subgroup_backtest_metrics": str(subgroup_metrics_path),
+        "rate_backtest_results": str(rate_backtest_path),
+        "rate_backtest_metrics": str(rate_backtest_metrics_path),
+        "rate_subgroup_backtest_metrics": str(rate_subgroup_metrics_path),
+        "intraday_recommendation_changes": str(intraday_updates_path) if intraday_updates_path else "",
     }
 
 
@@ -144,6 +152,7 @@ def build_pipeline_summary(
     top_raise_df: pd.DataFrame,
     tailored_summary_df: pd.DataFrame,
     model_comparison_df: pd.DataFrame | None = None,
+    rate_backtest_metrics_df: pd.DataFrame | None = None,
 ) -> dict:
     """Build the public summary payload returned by run_pipeline."""
     summary = {
@@ -160,4 +169,6 @@ def build_pipeline_summary(
     }
     if model_comparison_df is not None and len(model_comparison_df) > 0:
         summary["model_comparison"] = model_comparison_df.to_dict("records")
+    if rate_backtest_metrics_df is not None and len(rate_backtest_metrics_df) > 0:
+        summary["rate_backtest_metrics"] = rate_backtest_metrics_df.to_dict("records")
     return summary

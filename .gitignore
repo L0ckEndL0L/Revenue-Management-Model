@@ -67,6 +67,7 @@ temp/
 
 # Data policy: keep only safe demo samples tracked by default
 data/*.csv
+!data/intraday_comp_set_updates_sample.csv
 data/*.xlsx
 data/*.xls
 data/historical/*.csv

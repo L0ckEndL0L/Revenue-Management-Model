@@ -200,6 +200,23 @@ def render_comp_rate_controls(tailored_future_preview: pd.DataFrame) -> None:
         except Exception as exc:
             st.error(f"Failed to load comp-set file: {exc}")
 
+    intraday_file = st.file_uploader(
+        "Optional intraday comp-set updates (CSV/XLSX)",
+        type=["csv", "xlsx", "xls"],
+        key="intraday_updates_upload_file",
+    )
+    if intraday_file is not None:
+        try:
+            st.session_state.intraday_updates_df = read_table_source(intraday_file, filename=intraday_file.name)
+            st.success(f"Loaded intraday update rows: {len(st.session_state.intraday_updates_df)}")
+        except Exception as exc:
+            st.error(f"Failed to load intraday update file: {exc}")
+
+    intraday_updates_df = st.session_state.get("intraday_updates_df")
+    if intraday_updates_df is not None and len(intraday_updates_df) > 0:
+        with st.expander("Active intraday update preview", expanded=False):
+            st.dataframe(intraday_updates_df.head(40), use_container_width=True)
+
     comp_set_df = st.session_state.get("comp_set_df")
     if comp_set_df is not None and len(comp_set_df) > 0:
         with st.expander("Active comp-set preview", expanded=False):

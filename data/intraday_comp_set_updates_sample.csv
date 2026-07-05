@@ -1,0 +1,5 @@
+stay_date,update_timestamp,manual_daily_median_rate,reason_summary
+2026-07-01,2026-06-30 09:15:00,172,Early comp-set shop moved higher after nearby demand pickup
+2026-07-01,2026-06-30 14:30:00,186,Afternoon shop showed stronger premium competitor rates
+2026-07-02,2026-06-30 10:00:00,158,Midday comp-set refresh softened slightly after availability returned
+2026-07-03,2026-06-30 11:45:00,205,Event-period comp-set update reflected compression pricing

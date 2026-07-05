@@ -15,6 +15,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.baseline import generate_baseline_pricing_recommendations
+from src.tailored import build_tailored_recommendations
+
 
 def calculate_forecast_metrics(actual: pd.Series, predicted: pd.Series) -> Dict[str, float]:
     """Compute MAE, RMSE, MAPE, and directional accuracy."""
@@ -172,6 +175,145 @@ def build_subgroup_backtest_metrics(backtest_df: pd.DataFrame) -> pd.DataFrame:
                 }
             )
 
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _derive_actual_rate(df: pd.DataFrame) -> pd.Series:
+    actual = pd.Series(np.nan, index=df.index, dtype=float)
+    for column in ["actual_adr", "adr", "current_rate"]:
+        if column in df.columns:
+            actual = actual.combine_first(pd.to_numeric(df[column], errors="coerce"))
+    if {"room_revenue", "rooms_sold"}.issubset(df.columns):
+        revenue = pd.to_numeric(df["room_revenue"], errors="coerce")
+        sold = pd.to_numeric(df["rooms_sold"], errors="coerce").replace(0, np.nan)
+        actual = actual.combine_first(revenue / sold)
+    return actual
+
+
+def build_rate_backtest_frame(
+    historical_df: pd.DataFrame,
+    events_df: pd.DataFrame | None = None,
+    tailored_settings: dict | None = None,
+) -> pd.DataFrame:
+    """Build historical ADR/rate rows with baseline and RateAnchor recommendations."""
+    columns = [
+        "stay_date",
+        "actual_adr",
+        "baseline_recommendation",
+        "rateanchor_recommendation",
+        "baseline_error",
+        "rateanchor_error",
+        "property_type",
+        "event_period",
+    ]
+    if historical_df is None or len(historical_df) == 0:
+        return pd.DataFrame(columns=columns)
+
+    df = historical_df.copy()
+    df["stay_date"] = pd.to_datetime(df.get("stay_date"), errors="coerce")
+    df = df.dropna(subset=["stay_date"]).sort_values("stay_date").reset_index(drop=True)
+    if len(df) == 0:
+        return pd.DataFrame(columns=columns)
+
+    df["actual_adr"] = _derive_actual_rate(df)
+    baseline_df = generate_baseline_pricing_recommendations(df, historical_df=df)
+    tailored_df = build_tailored_recommendations(df, baseline_df, tailored_settings)
+
+    out = df[["stay_date", "actual_adr"]].copy()
+    out = out.merge(
+        baseline_df[["stay_date", "baseline_recommended_rate"]],
+        on="stay_date",
+        how="left",
+    ).rename(columns={"baseline_recommended_rate": "baseline_recommendation"})
+    out = out.merge(
+        tailored_df[["stay_date", "tailored_recommendation", "property_type"]],
+        on="stay_date",
+        how="left",
+    ).rename(columns={"tailored_recommendation": "rateanchor_recommendation"})
+
+    if "property_type" not in out.columns:
+        out["property_type"] = str((tailored_settings or {}).get("property_type", "Unspecified")).strip() or "Unspecified"
+    out["property_type"] = out["property_type"].fillna("Unspecified").astype(str)
+
+    out["event_period"] = "Non-event period"
+    if events_df is not None and len(events_df) > 0 and "stay_date" in events_df.columns:
+        event_dates = pd.to_datetime(events_df["stay_date"], errors="coerce").dropna().dt.normalize()
+        out["event_period"] = np.where(
+            pd.to_datetime(out["stay_date"], errors="coerce").dt.normalize().isin(set(event_dates)),
+            "Event period",
+            "Non-event period",
+        )
+    elif "event_flag" in df.columns:
+        out["event_period"] = np.where(pd.to_numeric(df["event_flag"], errors="coerce").fillna(0) > 0, "Event period", "Non-event period")
+
+    out["baseline_error"] = pd.to_numeric(out["baseline_recommendation"], errors="coerce") - pd.to_numeric(out["actual_adr"], errors="coerce")
+    out["rateanchor_error"] = pd.to_numeric(out["rateanchor_recommendation"], errors="coerce") - pd.to_numeric(out["actual_adr"], errors="coerce")
+    return out[columns].sort_values("stay_date").reset_index(drop=True)
+
+
+def build_rate_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.DataFrame:
+    """Compare actual ADR/rate against baseline and RateAnchor recommendations."""
+    rows = []
+    actual = rate_backtest_df.get("actual_adr", pd.Series(dtype=float))
+    model_columns = [
+        ("Baseline Model", "baseline_recommendation"),
+        ("RateAnchor Tailored Model", "rateanchor_recommendation"),
+    ]
+    baseline_mae = np.nan
+    baseline_rmse = np.nan
+    for model_name, prediction_col in model_columns:
+        metrics = calculate_forecast_metrics(actual=actual, predicted=rate_backtest_df.get(prediction_col, pd.Series(dtype=float)))
+        if model_name == "Baseline Model":
+            baseline_mae = metrics["mae"]
+            baseline_rmse = metrics["rmse"]
+        mae_delta = metrics["mae"] - baseline_mae if pd.notna(metrics["mae"]) and pd.notna(baseline_mae) else np.nan
+        rmse_delta = metrics["rmse"] - baseline_rmse if pd.notna(metrics["rmse"]) and pd.notna(baseline_rmse) else np.nan
+        rows.append(
+            {
+                "model": model_name,
+                "mae": metrics["mae"],
+                "rmse": metrics["rmse"],
+                "mae_difference_vs_baseline": mae_delta,
+                "rmse_difference_vs_baseline": rmse_delta,
+                "mae_improvement_vs_baseline": -mae_delta if pd.notna(mae_delta) else np.nan,
+                "rmse_improvement_vs_baseline": -rmse_delta if pd.notna(rmse_delta) else np.nan,
+                "backtest_rows": int((pd.to_numeric(actual, errors="coerce").notna() & pd.to_numeric(rate_backtest_df.get(prediction_col, pd.Series(dtype=float)), errors="coerce").notna()).sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_rate_subgroup_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.DataFrame:
+    """Build ADR/rate MAE/RMSE subgroup comparison by property type and event period."""
+    columns = ["property_type", "event_period", "model", "mae", "rmse", "backtest_rows"]
+    if rate_backtest_df is None or len(rate_backtest_df) == 0:
+        return pd.DataFrame(columns=columns)
+
+    df = rate_backtest_df.copy()
+    if "property_type" not in df.columns:
+        df["property_type"] = "Unspecified"
+    if "event_period" not in df.columns:
+        df["event_period"] = "Non-event period"
+    df["property_type"] = df["property_type"].fillna("Unspecified").astype(str)
+    df["event_period"] = df["event_period"].fillna("Non-event period").astype(str)
+
+    rows = []
+    for (property_type, event_period), group in df.groupby(["property_type", "event_period"], dropna=False):
+        for model_name, prediction_col in [
+            ("Baseline Model", "baseline_recommendation"),
+            ("RateAnchor Tailored Model", "rateanchor_recommendation"),
+        ]:
+            metrics = calculate_forecast_metrics(group.get("actual_adr", pd.Series(dtype=float)), group.get(prediction_col, pd.Series(dtype=float)))
+            rows.append(
+                {
+                    "property_type": property_type,
+                    "event_period": event_period,
+                    "model": model_name,
+                    "mae": metrics["mae"],
+                    "rmse": metrics["rmse"],
+                    "backtest_rows": int(len(group.dropna(subset=["actual_adr", prediction_col])) if prediction_col in group.columns else 0),
+                }
+            )
     return pd.DataFrame(rows, columns=columns)
 
 

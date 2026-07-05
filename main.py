@@ -19,6 +19,7 @@ from src.baseline import generate_baseline_pricing_recommendations
 from src.events import apply_event_impacts, load_events
 from src.forecast import build_future_forecast
 from src.ingest import process_file
+from src.intraday import process_intraday_updates
 from src.metrics import calculate_daily_metrics, export_metrics
 from src.pace import calculate_pace_analysis, load_historical_data
 from src.pipeline_budget_forecast import build_month_forecast_budget_context
@@ -283,6 +284,9 @@ def run_pipeline(
         forecast_vs_actual_csv_path,
         model_comparison_path,
         subgroup_metrics_path,
+        rate_backtest_path,
+        rate_backtest_metrics_path,
+        rate_subgroup_metrics_path,
     ) = write_evaluation_outputs(
         output_dir=output_dir,
         historical_metrics=historical_metrics,
@@ -293,6 +297,16 @@ def run_pipeline(
         elasticity=elasticity,
         tailored_settings=config.get("tailored_settings"),
     )
+
+    intraday_changes_df, intraday_warnings = process_intraday_updates(
+        future_context,
+        baseline_reco_df,
+        config.get("tailored_settings"),
+        config.get("intraday_updates_df"),
+        comp_set_df=config.get("comp_set_df"),
+    )
+    intraday_changes_path = output_dir / "intraday_recommendation_changes.csv"
+    intraday_changes_df.to_csv(intraday_changes_path, index=False)
 
     write_chart_outputs(
         output_dir=output_dir,
@@ -322,6 +336,10 @@ def run_pipeline(
         forecast_vs_actual_csv_path=forecast_vs_actual_csv_path,
         model_comparison_path=model_comparison_path,
         subgroup_metrics_path=subgroup_metrics_path,
+        rate_backtest_path=rate_backtest_path,
+        rate_backtest_metrics_path=rate_backtest_metrics_path,
+        rate_subgroup_metrics_path=rate_subgroup_metrics_path,
+        intraday_updates_path=intraday_changes_path,
     )
 
     summary = build_pipeline_summary(
@@ -335,7 +353,10 @@ def run_pipeline(
         top_raise_df=top_raise_df,
         tailored_summary_df=tailored_summary_df,
         model_comparison_df=pd.read_csv(model_comparison_path),
+        rate_backtest_metrics_df=pd.read_csv(rate_backtest_metrics_path),
     )
+    if intraday_warnings:
+        summary["intraday_update_warnings"] = intraday_warnings
 
     return output_paths, summary
 
