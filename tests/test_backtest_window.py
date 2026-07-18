@@ -136,6 +136,48 @@ def test_calibrated_tailored_forecast_falls_back_on_short_history() -> None:
 
     assert tailored["model_name"].eq("tailored_calibrated_baseline_short_history").all()
     assert tailored["forecast_rooms_sold"].equals(baseline["forecast_rooms_sold"])
+    assert tailored["selected_model"].eq("baseline").all()
+    assert tailored["confidence_weight"].eq(0.0).all()
+    assert tailored["calibration_rows"].eq(0).all()
+
+
+def test_calibrated_tailored_forecast_emits_stability_diagnostics() -> None:
+    frame = _model_frame(100)
+    target = _model_frame(7)
+    target["stay_date"] = pd.date_range("2026-04-11", periods=7, freq="D")
+    target["dow"] = target["stay_date"].dt.dayofweek
+    target["month"] = target["stay_date"].dt.month
+
+    out = calibrated_tailored_forecast(frame, target)
+
+    expected = {
+        "selected_model",
+        "raw_tailored_rooms_sold",
+        "calibration_rows",
+        "baseline_calibration_score",
+        "tailored_calibration_score",
+        "confidence_weight",
+    }
+    assert expected.issubset(out.columns)
+    assert out["calibration_rows"].eq(28).all()
+    assert out["baseline_calibration_score"].eq(1.0).all()
+    assert out["confidence_weight"].between(0.0, 0.50).all()
+
+
+def test_tailored_prediction_respects_adaptive_baseline_bounds() -> None:
+    frame = _model_frame(150)
+    frame.loc[frame.index >= 100, "rooms_sold"] = 90
+    target = _model_frame(7)
+    target["stay_date"] = pd.date_range("2026-06-01", periods=7, freq="D")
+    target["dow"] = target["stay_date"].dt.dayofweek
+    target["month"] = target["stay_date"].dt.month
+
+    baseline = baseline_forecast(frame, target)["forecast_rooms_sold"].reset_index(drop=True)
+    tailored = calibrated_tailored_forecast(frame, target)
+
+    # The adaptive cap never permits more than a 25% move from baseline.
+    assert (tailored["forecast_rooms_sold"] >= baseline * 0.75 - 1e-9).all()
+    assert (tailored["forecast_rooms_sold"] <= baseline * 1.25 + 1e-9).all()
 
 
 def test_evaluate_backtest_uses_rolling_windows_for_month_specific_results() -> None:
@@ -151,3 +193,11 @@ def test_evaluate_backtest_uses_rolling_windows_for_month_specific_results() -> 
     assert len(out) > 30
     assert {"July", "August", "September"}.issubset(set(out["month"]))
     assert {"Weekday", "Weekend"}.issubset(set(out["day_type"]))
+    assert {
+        "selected_model",
+        "raw_tailored_rooms_sold",
+        "calibration_rows",
+        "baseline_calibration_score",
+        "tailored_calibration_score",
+        "confidence_weight",
+    }.issubset(out.columns)

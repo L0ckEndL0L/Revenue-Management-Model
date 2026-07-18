@@ -15,6 +15,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+
+MONTH_ORDER = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+
 from src.baseline import generate_baseline_pricing_recommendations
 from src.tailored import build_tailored_recommendations
 
@@ -175,7 +191,21 @@ def build_subgroup_backtest_metrics(backtest_df: pd.DataFrame) -> pd.DataFrame:
                 }
             )
 
-    return pd.DataFrame(rows, columns=columns)
+    result = pd.DataFrame(rows, columns=columns)
+    month_rank = {month: rank for rank, month in enumerate(MONTH_ORDER)}
+    model_rank = {"Baseline Model": 0, "Tailored Model": 1}
+    day_type_rank = {"Weekday": 0, "Weekend": 1}
+    result["_month_rank"] = result["month"].map(month_rank).fillna(len(MONTH_ORDER))
+    result["_model_rank"] = result["model"].map(model_rank).fillna(len(model_rank))
+    result["_day_type_rank"] = result["day_type"].map(day_type_rank).fillna(len(day_type_rank))
+    return (
+        result.sort_values(
+            ["_month_rank", "property_type", "event_period", "_day_type_rank", "_model_rank"],
+            kind="stable",
+        )
+        .drop(columns=["_month_rank", "_model_rank", "_day_type_rank"])
+        .reset_index(drop=True)
+    )
 
 
 def _derive_actual_rate(df: pd.DataFrame) -> pd.Series:
@@ -190,21 +220,180 @@ def _derive_actual_rate(df: pd.DataFrame) -> pd.Series:
     return actual
 
 
+def _derive_historical_occupancy(df: pd.DataFrame) -> pd.Series:
+    occupancy = pd.to_numeric(df.get("occupancy", pd.Series(np.nan, index=df.index)), errors="coerce")
+    if occupancy.notna().any() and float(occupancy.max()) > 1.5:
+        occupancy = occupancy / 100.0
+    if {"rooms_available", "rooms_sold"}.issubset(df.columns):
+        available = pd.to_numeric(df["rooms_available"], errors="coerce").replace(0, np.nan)
+        sold = pd.to_numeric(df["rooms_sold"], errors="coerce")
+        occupancy = occupancy.combine_first(sold / available)
+    return occupancy.clip(lower=0.0, upper=1.2)
+
+
+def _rolling_rate_input(history: pd.DataFrame, target_row: pd.Series) -> pd.DataFrame:
+    """Create one date-safe recommendation row using only earlier outcomes."""
+    target_date = pd.Timestamp(target_row["stay_date"])
+    hist = history.copy().sort_values("stay_date")
+    hist_dates = pd.to_datetime(hist["stay_date"], errors="coerce")
+    hist_adr = _derive_actual_rate(hist)
+    hist_occupancy = _derive_historical_occupancy(hist)
+    same_dow = hist_dates.dt.dayofweek == target_date.dayofweek
+    recent_same_dow = hist.loc[same_dow].tail(8).index
+    recent_all = hist.tail(28).index
+
+    prior_adr = float(hist_adr.loc[recent_same_dow].median()) if len(recent_same_dow) else np.nan
+    if not np.isfinite(prior_adr):
+        prior_adr = float(hist_adr.loc[recent_all].median())
+    prior_occupancy = float(hist_occupancy.loc[recent_same_dow].median()) if len(recent_same_dow) else np.nan
+    if not np.isfinite(prior_occupancy):
+        prior_occupancy = float(hist_occupancy.loc[recent_all].median())
+
+    target_inventory = pd.to_numeric(pd.Series([target_row.get("rooms_available")]), errors="coerce").iloc[0]
+    if pd.isna(target_inventory) or target_inventory <= 0:
+        inventory_history = pd.to_numeric(hist.get("rooms_available", pd.Series(dtype=float)), errors="coerce")
+        inventory_history = inventory_history[inventory_history > 0]
+        target_inventory = float(inventory_history.tail(28).median()) if len(inventory_history) else np.nan
+
+    projected_rooms = prior_occupancy * target_inventory if np.isfinite(prior_occupancy) and np.isfinite(target_inventory) else np.nan
+    proxy = {
+        "stay_date": target_date,
+        "rooms_available": target_inventory,
+        "rooms_sold": projected_rooms,
+        "occupancy": prior_occupancy,
+        "adr": prior_adr,
+        "current_rate": prior_adr,
+        "room_revenue": projected_rooms * prior_adr if np.isfinite(projected_rooms) and np.isfinite(prior_adr) else np.nan,
+    }
+    # Event context is knowable before arrival and is safe to retain. Outcome
+    # fields such as same-day ADR, revenue, and occupancy are never copied.
+    for column in ["event_flag", "event_pct", "impact_level"]:
+        if column in target_row.index:
+            proxy[column] = target_row.get(column)
+    return pd.DataFrame([proxy])
+
+
+def _rate_candidate_score(
+    actual: pd.Series,
+    candidate: pd.Series,
+    baseline: pd.Series,
+) -> tuple[float, float, float, float, float]:
+    baseline_metrics = calculate_forecast_metrics(actual, baseline)
+    candidate_metrics = calculate_forecast_metrics(actual, candidate)
+    baseline_mae = baseline_metrics["mae"]
+    baseline_rmse = baseline_metrics["rmse"]
+    candidate_mae = candidate_metrics["mae"]
+    candidate_rmse = candidate_metrics["rmse"]
+    if not all(np.isfinite(value) for value in [baseline_mae, baseline_rmse, candidate_mae, candidate_rmse]):
+        return float("inf"), candidate_mae, candidate_rmse, baseline_mae, baseline_rmse
+    mae_scale = baseline_mae if baseline_mae > 0 else 1.0
+    rmse_scale = baseline_rmse if baseline_rmse > 0 else 1.0
+    score = 0.4 * (candidate_mae / mae_scale) + 0.6 * (candidate_rmse / rmse_scale)
+    return float(score), candidate_mae, candidate_rmse, baseline_mae, baseline_rmse
+
+
+def _rate_weekly_wins(actual: pd.Series, candidate: pd.Series, baseline: pd.Series) -> tuple[int, int]:
+    wins = 0
+    windows = 0
+    for start in range(0, len(actual), 7):
+        stop = min(start + 7, len(actual))
+        score, _, _, _, _ = _rate_candidate_score(
+            actual.iloc[start:stop], candidate.iloc[start:stop], baseline.iloc[start:stop]
+        )
+        if np.isfinite(score):
+            windows += 1
+            if score < 1.0:
+                wins += 1
+    return wins, windows
+
+
+def _calibrated_rate_recommendation(
+    prior_rows: list[dict],
+    baseline_rate: float,
+    raw_tailored_rate: float,
+) -> tuple[float, str, int, float, float]:
+    """Select a date-safe rate challenger from earlier backtest evidence."""
+    calibration_rows = 42
+    if len(prior_rows) < calibration_rows:
+        return baseline_rate, "baseline_warmup", 0, 1.0, 0.0
+
+    prior = pd.DataFrame(prior_rows[-calibration_rows:]).reset_index(drop=True)
+    validation = prior.iloc[14:]
+    actual = pd.to_numeric(validation["actual_adr"], errors="coerce").reset_index(drop=True)
+    baseline = pd.to_numeric(validation["baseline_recommendation"], errors="coerce").reset_index(drop=True)
+    raw_tailored = pd.to_numeric(validation["raw_rateanchor_recommendation"], errors="coerce").reset_index(drop=True)
+
+    candidates: list[tuple[str, pd.Series, float]] = [
+        ("raw_tailored", raw_tailored, raw_tailored_rate),
+    ]
+    for weight in [0.25, 0.50, 0.75]:
+        candidates.append(
+            (
+                f"baseline_tailored_blend_{weight:.2f}",
+                baseline * (1.0 - weight) + raw_tailored * weight,
+                baseline_rate * (1.0 - weight) + raw_tailored_rate * weight,
+            )
+        )
+
+    best_name = "baseline"
+    best_prediction = baseline_rate
+    best_score = 1.0
+    for name, validation_prediction, target_prediction in candidates:
+        score, candidate_mae, candidate_rmse, baseline_mae, baseline_rmse = _rate_candidate_score(
+            actual, validation_prediction, baseline
+        )
+        wins, windows = _rate_weekly_wins(actual, validation_prediction, baseline)
+        required_wins = int(np.ceil(windows * 0.75))
+        passes = (
+            windows == 4
+            and wins >= required_wins
+            and score <= 0.97
+            and candidate_mae <= baseline_mae
+            and candidate_rmse <= baseline_rmse
+        )
+        if passes and score < best_score:
+            best_name = name
+            best_prediction = float(target_prediction)
+            best_score = float(score)
+
+    if best_name == "baseline":
+        return baseline_rate, best_name, calibration_rows, 1.0, 0.0
+
+    improvement = max(0.0, 1.0 - best_score)
+    history_cap = 0.50 if len(prior_rows) <= 120 else 0.75
+    confidence = history_cap * float(np.clip(improvement / 0.15, 0.0, 1.0))
+    final_rate = baseline_rate * (1.0 - confidence) + best_prediction * confidence
+    max_deviation = 0.10 + 0.10 * min(confidence / 0.75, 1.0)
+    final_rate = float(np.clip(final_rate, baseline_rate * (1.0 - max_deviation), baseline_rate * (1.0 + max_deviation)))
+    return final_rate, best_name, calibration_rows, best_score, confidence
+
+
 def build_rate_backtest_frame(
     historical_df: pd.DataFrame,
     events_df: pd.DataFrame | None = None,
     tailored_settings: dict | None = None,
+    min_history_days: int = 28,
 ) -> pd.DataFrame:
-    """Build historical ADR/rate rows with baseline and RateAnchor recommendations."""
+    """Run a rolling rate backtest using only information available beforehand."""
     columns = [
         "stay_date",
         "actual_adr",
         "baseline_recommendation",
+        "raw_rateanchor_recommendation",
         "rateanchor_recommendation",
         "baseline_error",
         "rateanchor_error",
         "property_type",
         "event_period",
+        "month",
+        "day_type",
+        "history_rows",
+        "rate_input_adr",
+        "rate_input_occupancy",
+        "selected_rate_model",
+        "rate_calibration_rows",
+        "rate_calibration_score",
+        "rate_confidence_weight",
     ]
     if historical_df is None or len(historical_df) == 0:
         return pd.DataFrame(columns=columns)
@@ -216,39 +405,53 @@ def build_rate_backtest_frame(
         return pd.DataFrame(columns=columns)
 
     df["actual_adr"] = _derive_actual_rate(df)
-    baseline_df = generate_baseline_pricing_recommendations(df, historical_df=df)
-    tailored_df = build_tailored_recommendations(df, baseline_df, tailored_settings)
-
-    out = df[["stay_date", "actual_adr"]].copy()
-    out = out.merge(
-        baseline_df[["stay_date", "baseline_recommended_rate"]],
-        on="stay_date",
-        how="left",
-    ).rename(columns={"baseline_recommended_rate": "baseline_recommendation"})
-    out = out.merge(
-        tailored_df[["stay_date", "tailored_recommendation", "property_type"]],
-        on="stay_date",
-        how="left",
-    ).rename(columns={"tailored_recommendation": "rateanchor_recommendation"})
-
-    if "property_type" not in out.columns:
-        out["property_type"] = str((tailored_settings or {}).get("property_type", "Unspecified")).strip() or "Unspecified"
-    out["property_type"] = out["property_type"].fillna("Unspecified").astype(str)
-
-    out["event_period"] = "Non-event period"
+    event_dates: set[pd.Timestamp] = set()
     if events_df is not None and len(events_df) > 0 and "stay_date" in events_df.columns:
-        event_dates = pd.to_datetime(events_df["stay_date"], errors="coerce").dropna().dt.normalize()
-        out["event_period"] = np.where(
-            pd.to_datetime(out["stay_date"], errors="coerce").dt.normalize().isin(set(event_dates)),
-            "Event period",
-            "Non-event period",
-        )
-    elif "event_flag" in df.columns:
-        out["event_period"] = np.where(pd.to_numeric(df["event_flag"], errors="coerce").fillna(0) > 0, "Event period", "Non-event period")
+        event_dates = set(pd.to_datetime(events_df["stay_date"], errors="coerce").dropna().dt.normalize())
 
-    out["baseline_error"] = pd.to_numeric(out["baseline_recommendation"], errors="coerce") - pd.to_numeric(out["actual_adr"], errors="coerce")
-    out["rateanchor_error"] = pd.to_numeric(out["rateanchor_recommendation"], errors="coerce") - pd.to_numeric(out["actual_adr"], errors="coerce")
-    return out[columns].sort_values("stay_date").reset_index(drop=True)
+    rows: list[dict] = []
+    start = max(1, int(min_history_days))
+    for target_index in range(start, len(df)):
+        history = df.iloc[:target_index].copy()
+        target_row = df.iloc[target_index]
+        proxy_input = _rolling_rate_input(history, target_row)
+        baseline_df = generate_baseline_pricing_recommendations(proxy_input, historical_df=history)
+        tailored_df = build_tailored_recommendations(proxy_input, baseline_df, tailored_settings)
+
+        stay_date = pd.Timestamp(target_row["stay_date"])
+        event_flag = int(pd.to_numeric(pd.Series([target_row.get("event_flag", 0)]), errors="coerce").fillna(0).iloc[0])
+        is_event = stay_date.normalize() in event_dates if event_dates else event_flag > 0
+        actual_adr = pd.to_numeric(pd.Series([target_row.get("actual_adr")]), errors="coerce").iloc[0]
+        baseline_rate = pd.to_numeric(baseline_df["baseline_recommended_rate"], errors="coerce").iloc[0]
+        raw_tailored_rate = pd.to_numeric(tailored_df["tailored_recommendation"], errors="coerce").iloc[0]
+        tailored_rate, selected_rate_model, rate_calibration_rows, rate_calibration_score, rate_confidence = (
+            _calibrated_rate_recommendation(rows, baseline_rate, raw_tailored_rate)
+        )
+        property_type = tailored_df["property_type"].iloc[0] if "property_type" in tailored_df.columns else "Unspecified"
+        rows.append(
+            {
+                "stay_date": stay_date,
+                "actual_adr": actual_adr,
+                "baseline_recommendation": baseline_rate,
+                "raw_rateanchor_recommendation": raw_tailored_rate,
+                "rateanchor_recommendation": tailored_rate,
+                "baseline_error": baseline_rate - actual_adr,
+                "rateanchor_error": tailored_rate - actual_adr,
+                "property_type": str(property_type or "Unspecified"),
+                "event_period": "Event period" if is_event else "Non-event period",
+                "month": stay_date.month_name(),
+                "day_type": "Weekend" if stay_date.dayofweek in {4, 5} else "Weekday",
+                "history_rows": len(history),
+                "rate_input_adr": proxy_input["adr"].iloc[0],
+                "rate_input_occupancy": proxy_input["occupancy"].iloc[0],
+                "selected_rate_model": selected_rate_model,
+                "rate_calibration_rows": rate_calibration_rows,
+                "rate_calibration_score": rate_calibration_score,
+                "rate_confidence_weight": rate_confidence,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns).sort_values("stay_date").reset_index(drop=True)
 
 
 def build_rate_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.DataFrame:
@@ -284,8 +487,8 @@ def build_rate_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_rate_subgroup_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.DataFrame:
-    """Build ADR/rate MAE/RMSE subgroup comparison by property type and event period."""
-    columns = ["property_type", "event_period", "model", "mae", "rmse", "backtest_rows"]
+    """Build rate-error comparisons by property, event, month, and day type."""
+    columns = ["property_type", "event_period", "month", "day_type", "model", "mae", "rmse", "backtest_rows"]
     if rate_backtest_df is None or len(rate_backtest_df) == 0:
         return pd.DataFrame(columns=columns)
 
@@ -294,11 +497,19 @@ def build_rate_subgroup_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.D
         df["property_type"] = "Unspecified"
     if "event_period" not in df.columns:
         df["event_period"] = "Non-event period"
+    if "month" not in df.columns:
+        df["month"] = pd.to_datetime(df.get("stay_date"), errors="coerce").dt.month_name().fillna("Unspecified")
+    if "day_type" not in df.columns:
+        stay_dates = pd.to_datetime(df.get("stay_date"), errors="coerce")
+        df["day_type"] = np.where(stay_dates.dt.dayofweek.isin([4, 5]), "Weekend", "Weekday")
     df["property_type"] = df["property_type"].fillna("Unspecified").astype(str)
     df["event_period"] = df["event_period"].fillna("Non-event period").astype(str)
+    df["month"] = df["month"].fillna("Unspecified").astype(str)
+    df["day_type"] = df["day_type"].fillna("Unspecified").astype(str)
 
     rows = []
-    for (property_type, event_period), group in df.groupby(["property_type", "event_period"], dropna=False):
+    group_cols = ["property_type", "event_period", "month", "day_type"]
+    for (property_type, event_period, month, day_type), group in df.groupby(group_cols, dropna=False):
         for model_name, prediction_col in [
             ("Baseline Model", "baseline_recommendation"),
             ("RateAnchor Tailored Model", "rateanchor_recommendation"),
@@ -308,13 +519,29 @@ def build_rate_subgroup_backtest_metrics(rate_backtest_df: pd.DataFrame) -> pd.D
                 {
                     "property_type": property_type,
                     "event_period": event_period,
+                    "month": month,
+                    "day_type": day_type,
                     "model": model_name,
                     "mae": metrics["mae"],
                     "rmse": metrics["rmse"],
                     "backtest_rows": int(len(group.dropna(subset=["actual_adr", prediction_col])) if prediction_col in group.columns else 0),
                 }
             )
-    return pd.DataFrame(rows, columns=columns)
+    result = pd.DataFrame(rows, columns=columns)
+    month_rank = {month: rank for rank, month in enumerate(MONTH_ORDER)}
+    model_rank = {"Baseline Model": 0, "RateAnchor Tailored Model": 1}
+    day_type_rank = {"Weekday": 0, "Weekend": 1}
+    result["_month_rank"] = result["month"].map(month_rank).fillna(len(MONTH_ORDER))
+    result["_model_rank"] = result["model"].map(model_rank).fillna(len(model_rank))
+    result["_day_type_rank"] = result["day_type"].map(day_type_rank).fillna(len(day_type_rank))
+    return (
+        result.sort_values(
+            ["_month_rank", "property_type", "event_period", "_day_type_rank", "_model_rank"],
+            kind="stable",
+        )
+        .drop(columns=["_month_rank", "_model_rank", "_day_type_rank"])
+        .reset_index(drop=True)
+    )
 
 
 def plot_forecast_vs_actual(forecast_df: pd.DataFrame, output_path: str) -> None:

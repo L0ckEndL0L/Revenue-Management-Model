@@ -113,6 +113,7 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
         events_file = st.file_uploader("Optional events.csv", type=["csv"])
 
         if historical_file is not None:
+            st.session_state.pop("last_completed_run_results", None)
             hist_preview = read_uploaded_table(historical_file)
             st.session_state.historical_df = hist_preview
             st.session_state.load_dataset_success = False
@@ -122,6 +123,7 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
             st.caption(f"Historical columns: {', '.join([str(c) for c in hist_preview.columns])}")
 
         if future_file is not None:
+            st.session_state.pop("last_completed_run_results", None)
             fut_preview = read_uploaded_table(future_file)
             st.session_state.future_df = fut_preview
             st.session_state.load_dataset_success = False
@@ -131,6 +133,7 @@ def render_upload_panel(use_manual_rooms_available: bool) -> dict:
             st.caption(f"Future columns: {', '.join([str(c) for c in fut_preview.columns])}")
 
         if events_file is not None:
+            st.session_state.pop("last_completed_run_results", None)
             events_preview = read_uploaded_table(events_file)
             st.session_state.events_df = events_preview
 

@@ -203,61 +203,129 @@ def _error_rmse(actual: pd.Series, predicted: pd.Series) -> float:
 
 
 def _smoothed_group_bias(
-    calibration: pd.DataFrame,
+    bias_history: pd.DataFrame,
+    validation: pd.DataFrame,
     target: pd.DataFrame,
     *,
     group_cols: list[str],
-    baseline_values: pd.Series,
+    history_baseline_values: pd.Series,
+    validation_baseline_values: pd.Series,
     baseline_target_values: pd.Series,
-    actual_values: pd.Series,
-    global_bias: float,
-    min_group_rows: int = 2,
-    smoothing_prior: float = 3.0,
+    history_actual_values: pd.Series,
+    min_group_rows: int = 8,
+    smoothing_prior: float = 8.0,
 ) -> tuple[pd.Series, pd.Series] | None:
-    """Build conservative residual correction by subgroup."""
-    if not set(group_cols).issubset(calibration.columns) or not set(group_cols).issubset(target.columns):
+    """Estimate a conservative subgroup correction on history only.
+
+    The correction is deliberately estimated before the validation period.  This
+    keeps the same observations from both creating and validating a residual
+    adjustment, which otherwise makes small groups look more reliable than they
+    are.
+    """
+    required = set(group_cols)
+    if not required.issubset(bias_history.columns):
+        return None
+    if not required.issubset(validation.columns) or not required.issubset(target.columns):
         return None
 
-    cal_context = calibration.reset_index(drop=True).copy()
+    history_context = bias_history.reset_index(drop=True).copy()
+    validation_context = validation.reset_index(drop=True).copy()
     target_context = target.reset_index(drop=True).copy()
-    cal_context["_actual"] = actual_values.reset_index(drop=True)
-    cal_context["_baseline"] = baseline_values.reset_index(drop=True)
-    cal_context["_residual"] = cal_context["_actual"] - cal_context["_baseline"]
-    grouped = cal_context.groupby(group_cols, dropna=False)["_residual"].agg(["sum", "count"]).reset_index()
+    history_context["_actual"] = history_actual_values.reset_index(drop=True)
+    history_context["_baseline"] = history_baseline_values.reset_index(drop=True)
+    history_context["_residual"] = history_context["_actual"] - history_context["_baseline"]
+    global_bias = float(history_context["_residual"].dropna().mean())
+    if not np.isfinite(global_bias):
+        global_bias = 0.0
+
+    grouped = history_context.groupby(group_cols, dropna=False)["_residual"].agg(["sum", "count"]).reset_index()
     grouped = grouped[grouped["count"] >= min_group_rows].copy()
     if len(grouped) == 0:
         return None
 
     grouped["_bias"] = (grouped["sum"] + global_bias * smoothing_prior) / (grouped["count"] + smoothing_prior)
-    selected_rows = []
-    for _, row in grouped.iterrows():
-        mask = pd.Series(True, index=cal_context.index)
-        for col in group_cols:
-            mask &= cal_context[col].eq(row[col])
-        group_actual = cal_context.loc[mask, "_actual"]
-        group_baseline = cal_context.loc[mask, "_baseline"]
-        group_adjusted = group_baseline + float(row["_bias"])
-        base_mae = _error_mae(group_actual, group_baseline)
-        base_rmse = _error_rmse(group_actual, group_baseline)
-        adj_mae = _error_mae(group_actual, group_adjusted)
-        adj_rmse = _error_rmse(group_actual, group_adjusted)
-        mae_scale = base_mae if np.isfinite(base_mae) and base_mae > 0 else 1.0
-        rmse_scale = base_rmse if np.isfinite(base_rmse) and base_rmse > 0 else 1.0
-        score = 0.3 * (adj_mae / mae_scale) + 0.7 * (adj_rmse / rmse_scale)
-        if np.isfinite(score) and score < 1.0:
-            selected_rows.append(row)
-
-    if not selected_rows:
-        return None
-
-    selected = pd.DataFrame(selected_rows)[group_cols + ["_bias"]]
-    cal_bias = cal_context.merge(selected, on=group_cols, how="left")["_bias"].fillna(0.0)
+    selected = grouped[group_cols + ["_bias"]]
+    validation_bias = validation_context.merge(selected, on=group_cols, how="left")["_bias"].fillna(0.0)
     target_bias = target_context.merge(selected, on=group_cols, how="left")["_bias"].fillna(0.0)
 
     return (
-        baseline_values.reset_index(drop=True) + cal_bias,
+        validation_baseline_values.reset_index(drop=True) + validation_bias,
         baseline_target_values.reset_index(drop=True) + target_bias,
     )
+
+
+def _composite_error_score(
+    actual: pd.Series,
+    predicted: pd.Series,
+    baseline_predicted: pd.Series,
+) -> tuple[float, float, float]:
+    """Return the MAE/RMSE-normalized score and the candidate errors."""
+    baseline_mae = _error_mae(actual, baseline_predicted)
+    baseline_rmse = _error_rmse(actual, baseline_predicted)
+    candidate_mae = _error_mae(actual, predicted)
+    candidate_rmse = _error_rmse(actual, predicted)
+    if not all(np.isfinite(value) for value in [baseline_mae, baseline_rmse, candidate_mae, candidate_rmse]):
+        return float("inf"), candidate_mae, candidate_rmse
+    mae_scale = baseline_mae if baseline_mae > 0 else 1.0
+    rmse_scale = baseline_rmse if baseline_rmse > 0 else 1.0
+    score = 0.3 * (candidate_mae / mae_scale) + 0.7 * (candidate_rmse / rmse_scale)
+    return float(score), float(candidate_mae), float(candidate_rmse)
+
+
+def _weekly_validation_wins(
+    actual: pd.Series,
+    candidate: pd.Series,
+    baseline: pd.Series,
+    window_days: int = 7,
+) -> tuple[int, int]:
+    """Count validation windows where the candidate beats the baseline."""
+    wins = 0
+    windows = 0
+    for start in range(0, len(actual), window_days):
+        stop = min(start + window_days, len(actual))
+        if stop <= start:
+            continue
+        window_score, _, _ = _composite_error_score(
+            actual.iloc[start:stop],
+            candidate.iloc[start:stop],
+            baseline.iloc[start:stop],
+        )
+        if np.isfinite(window_score):
+            windows += 1
+            if window_score < 1.0:
+                wins += 1
+    return wins, windows
+
+
+def _history_confidence_cap(history_rows: int) -> float:
+    """Limit how far a validated candidate may move away from baseline."""
+    if history_rows < 28:
+        return 0.0
+    if history_rows <= 60:
+        return 0.25
+    if history_rows <= 120:
+        return 0.50
+    return 0.75
+
+
+def _attach_tailored_diagnostics(
+    frame: pd.DataFrame,
+    *,
+    selected_model: str,
+    raw_prediction: pd.Series,
+    calibration_rows: int,
+    tailored_score: float,
+    confidence_weight: float,
+) -> pd.DataFrame:
+    """Attach selection evidence needed to audit each backtest prediction."""
+    out = frame.copy()
+    out["selected_model"] = selected_model
+    out["raw_tailored_rooms_sold"] = raw_prediction.reset_index(drop=True).to_numpy()
+    out["calibration_rows"] = int(calibration_rows)
+    out["baseline_calibration_score"] = 1.0
+    out["tailored_calibration_score"] = float(tailored_score)
+    out["confidence_weight"] = float(confidence_weight)
+    return out
 
 
 def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame) -> pd.DataFrame:
@@ -268,16 +336,30 @@ def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame
     baseline, enhanced, blended, and bias-corrected candidates on the most recent
     training slice, then applies the best validated choice to the target period.
     """
-    baseline_target = baseline_forecast(train_df=train_df, target_df=target_df)
+    baseline_target = baseline_forecast(train_df=train_df, target_df=target_df).reset_index(drop=True)
     if len(target_df) == 0:
-        return baseline_target.assign(model_name="tailored_calibrated")
+        return _attach_tailored_diagnostics(
+            baseline_target.assign(model_name="tailored_calibrated"),
+            selected_model="baseline",
+            raw_prediction=baseline_target["forecast_rooms_sold"],
+            calibration_rows=0,
+            tailored_score=1.0,
+            confidence_weight=0.0,
+        )
 
-    if len(train_df) < 14:
-        return baseline_target.assign(model_name="tailored_calibrated_baseline_short_history")
-
-    calibration_size = min(7, max(3, int(round(len(train_df) * 0.30))))
-    if len(train_df) - calibration_size < 5:
-        return baseline_target.assign(model_name="tailored_calibrated_baseline_short_history")
+    # Reserve enough history to estimate candidates before a separate four-week
+    # validation horizon.  Shorter histories stay with the stable baseline.
+    calibration_size = 28
+    minimum_candidate_history = 14
+    if len(train_df) < calibration_size + minimum_candidate_history:
+        return _attach_tailored_diagnostics(
+            baseline_target.assign(model_name="tailored_calibrated_baseline_short_history"),
+            selected_model="baseline",
+            raw_prediction=baseline_target["forecast_rooms_sold"],
+            calibration_rows=0,
+            tailored_score=1.0,
+            confidence_weight=0.0,
+        )
 
     core_train = train_df.iloc[:-calibration_size].copy()
     calibration = train_df.iloc[-calibration_size:].copy()
@@ -287,7 +369,9 @@ def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame
 
     baseline_values = baseline_cal["forecast_rooms_sold"].reset_index(drop=True)
     actual_values = actual_cal.reset_index(drop=True)
-    bias_adjustment = float((actual_values - baseline_values).mean())
+    core_baseline = baseline_forecast(train_df=core_train, target_df=core_train)
+    core_baseline_values = core_baseline["forecast_rooms_sold"].reset_index(drop=True)
+    core_actual_values = core_train["rooms_sold"].reset_index(drop=True)
 
     candidate_predictions: list[tuple[str, pd.Series, pd.Series]] = [
         (
@@ -303,13 +387,14 @@ def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame
         ("baseline_month_day_type_bias_corrected", ["month", "day_type"]),
     ]:
         group_candidate = _smoothed_group_bias(
-            calibration=calibration,
+            bias_history=core_train,
+            validation=calibration,
             target=target_df,
             group_cols=group_cols,
-            baseline_values=baseline_values,
+            history_baseline_values=core_baseline_values,
+            validation_baseline_values=baseline_values,
             baseline_target_values=baseline_target["forecast_rooms_sold"].reset_index(drop=True),
-            actual_values=actual_values,
-            global_bias=bias_adjustment,
+            history_actual_values=core_actual_values,
         )
         if group_candidate is not None:
             candidate_predictions.append((name, group_candidate[0], group_candidate[1]))
@@ -354,25 +439,43 @@ def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame
                 )
 
     best_name = "baseline"
-    best_target_prediction = baseline_target["forecast_rooms_sold"].reset_index(drop=True)
+    baseline_target_values = baseline_target["forecast_rooms_sold"].reset_index(drop=True)
+    best_target_prediction = baseline_target_values
     baseline_mae = _error_mae(actual_values, baseline_values)
     baseline_rmse = _error_rmse(actual_values, baseline_values)
-    mae_scale = baseline_mae if np.isfinite(baseline_mae) and baseline_mae > 0 else 1.0
-    rmse_scale = baseline_rmse if np.isfinite(baseline_rmse) and baseline_rmse > 0 else 1.0
     best_score = 1.0
     for name, calibration_prediction, target_prediction in candidate_predictions:
-        mae = _error_mae(actual_values, calibration_prediction)
-        rmse = _error_rmse(actual_values, calibration_prediction)
-        if not np.isfinite(mae) or not np.isfinite(rmse):
+        score, mae, rmse = _composite_error_score(actual_values, calibration_prediction, baseline_values)
+        wins, windows = _weekly_validation_wins(actual_values, calibration_prediction, baseline_values)
+        required_wins = int(np.ceil(windows * 0.75))
+        passes_guardrails = (
+            windows > 0
+            and wins >= required_wins
+            and score <= 0.95
+            and mae <= baseline_mae * 1.02
+            and rmse <= baseline_rmse * 1.02
+        )
+        if not passes_guardrails:
             continue
-        score = 0.3 * (mae / mae_scale) + 0.7 * (rmse / rmse_scale)
         if score < best_score:
             best_name = name
             best_target_prediction = target_prediction
             best_score = score
 
     out = baseline_target.copy()
-    tailored_prediction = best_target_prediction.fillna(baseline_target["forecast_rooms_sold"].reset_index(drop=True))
+    raw_tailored_prediction = best_target_prediction.fillna(baseline_target_values).clip(lower=0.0)
+    improvement = max(0.0, 1.0 - best_score)
+    confidence_cap = _history_confidence_cap(len(train_df))
+    confidence_strength = float(np.clip(improvement / 0.20, 0.0, 1.0))
+    confidence_weight = confidence_cap * confidence_strength if best_name != "baseline" else 0.0
+    tailored_prediction = baseline_target_values * (1.0 - confidence_weight) + raw_tailored_prediction * confidence_weight
+
+    # Permit a 15% deviation with limited evidence and gradually expand to 25%
+    # only after a strongly validated, long-history selection.
+    max_deviation = 0.15 + 0.10 * min(confidence_weight / 0.75, 1.0)
+    lower_bound = baseline_target_values * (1.0 - max_deviation)
+    upper_bound = baseline_target_values * (1.0 + max_deviation)
+    tailored_prediction = tailored_prediction.clip(lower=lower_bound, upper=upper_bound)
     out["forecast_rooms_sold"] = tailored_prediction.clip(lower=0.0).to_numpy()
     if "rooms_available" in out.columns:
         out["forecast_rooms_sold"] = np.minimum(
@@ -386,7 +489,14 @@ def calibrated_tailored_forecast(train_df: pd.DataFrame, target_df: pd.DataFrame
         0.0,
     )
     out["model_name"] = f"tailored_calibrated_{best_name}"
-    return out
+    return _attach_tailored_diagnostics(
+        out,
+        selected_model=best_name,
+        raw_prediction=raw_tailored_prediction,
+        calibration_rows=calibration_size,
+        tailored_score=best_score,
+        confidence_weight=confidence_weight,
+    )
 
 
 def build_backtest_sets(
@@ -419,6 +529,12 @@ def _evaluate_backtest_window(train: pd.DataFrame, test: pd.DataFrame) -> pd.Dat
     out = out.rename(columns={"rooms_sold": "actual_rooms_sold", "room_revenue": "actual_revenue"})
     out["baseline_rooms_sold"] = baseline_pred["forecast_rooms_sold"].to_numpy()
     out["enhanced_rooms_sold"] = enhanced_pred["forecast_rooms_sold"].to_numpy()
+    out["raw_tailored_rooms_sold"] = enhanced_pred["raw_tailored_rooms_sold"].to_numpy()
+    out["selected_model"] = enhanced_pred["selected_model"].to_numpy()
+    out["calibration_rows"] = enhanced_pred["calibration_rows"].to_numpy()
+    out["baseline_calibration_score"] = enhanced_pred["baseline_calibration_score"].to_numpy()
+    out["tailored_calibration_score"] = enhanced_pred["tailored_calibration_score"].to_numpy()
+    out["confidence_weight"] = enhanced_pred["confidence_weight"].to_numpy()
     out["baseline_revenue"] = baseline_pred["forecast_revenue"].to_numpy()
     out["enhanced_revenue"] = enhanced_pred["forecast_revenue"].to_numpy()
     out["month"] = test["stay_date"].dt.month_name().to_numpy()
@@ -451,6 +567,12 @@ def evaluate_backtest(
         "actual_rooms_sold",
         "baseline_rooms_sold",
         "enhanced_rooms_sold",
+        "raw_tailored_rooms_sold",
+        "selected_model",
+        "calibration_rows",
+        "baseline_calibration_score",
+        "tailored_calibration_score",
+        "confidence_weight",
         "actual_revenue",
         "baseline_revenue",
         "enhanced_revenue",

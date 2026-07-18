@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -323,6 +324,18 @@ def test_missing_median_produces_warning_but_does_not_crash() -> None:
     july_3 = out.loc[out["stay_date"] == "2026-07-03"].iloc[0]
     assert july_3["median_rate_source"] == MISSING_MEDIAN_SOURCE
     assert str(july_3["model_status"]).startswith("WARNING")
+
+
+def test_missing_pace_and_event_values_keep_tailored_recommendations_numeric() -> None:
+    future_df = _sample_future_df().copy()
+    future_df["pace_variance"] = [float("nan"), None, float("inf"), float("-inf")]
+    future_df["event_pct"] = [float("nan"), None, float("inf"), float("-inf")]
+
+    out = build_tailored_recommendations(future_df, _sample_baseline_df(), default_tailored_settings())
+
+    assert out["tailored_recommendation"].notna().all()
+    assert out["tailored_recommendation"].map(lambda value: np.isfinite(float(value))).all()
+    assert ~out["reasoning_notes"].str.contains("nan", case=False).any()
 
 
 def test_updating_one_dates_manual_median_changes_that_dates_recommendation() -> None:

@@ -25,18 +25,49 @@ def write_recommendation_outputs(
     pricing_config,
     elasticity: float,
     budget_summary: dict,
+    monthly_budget_summary_df: pd.DataFrame | None,
     tailored_settings: dict | None,
     target_occ: float,
     comp_set_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Path, Path, Path, Path, Path, Path]:
     """Write rate, tailored, and priority recommendation CSV outputs."""
-    recommendations_df, _simulation_df = simulate_elasticity_pricing(
-        future_context,
-        config=pricing_config,
-        elasticity=elasticity,
-        budget_gap=float(budget_summary.get("remaining_budget", 0.0)),
-        required_adr_remaining=float(budget_summary.get("required_adr_remaining", 0.0)),
-    )
+    recommendation_frames: list[pd.DataFrame] = []
+    dated_future = future_context.copy()
+    dated_future["stay_date"] = pd.to_datetime(dated_future.get("stay_date"), errors="coerce")
+    if monthly_budget_summary_df is not None and len(monthly_budget_summary_df) > 0:
+        monthly_lookup = monthly_budget_summary_df.copy()
+        monthly_lookup["year"] = pd.to_numeric(monthly_lookup["year"], errors="coerce")
+        monthly_lookup["month"] = pd.to_numeric(monthly_lookup["month"], errors="coerce")
+        for (year, month), month_future in dated_future.groupby(
+            [dated_future["stay_date"].dt.year, dated_future["stay_date"].dt.month],
+            sort=True,
+        ):
+            budget_row = monthly_lookup[
+                (monthly_lookup["year"] == year) & (monthly_lookup["month"] == month)
+            ]
+            month_budget = budget_row.iloc[0].to_dict() if len(budget_row) else {}
+            budget_gap = float(month_budget.get("remaining_budget", 0.0))
+            required_adr = float(month_budget.get("required_adr_remaining", 0.0))
+            month_recommendations, _ = simulate_elasticity_pricing(
+                month_future,
+                config=pricing_config,
+                elasticity=elasticity,
+                budget_gap=budget_gap,
+                required_adr_remaining=required_adr,
+            )
+            month_recommendations["budget_gap"] = budget_gap
+            month_recommendations["required_adr_remaining"] = required_adr
+            recommendation_frames.append(month_recommendations)
+    if recommendation_frames:
+        recommendations_df = pd.concat(recommendation_frames, ignore_index=True).sort_values("stay_date").reset_index(drop=True)
+    else:
+        recommendations_df, _ = simulate_elasticity_pricing(
+            future_context,
+            config=pricing_config,
+            elasticity=elasticity,
+            budget_gap=float(budget_summary.get("remaining_budget", 0.0)),
+            required_adr_remaining=float(budget_summary.get("required_adr_remaining", 0.0)),
+        )
 
     recommendations_path = output_dir / "rate_recommendations.csv"
     if "recommended_rate" not in recommendations_df.columns and "new_policy_rate" in recommendations_df.columns:
@@ -108,10 +139,12 @@ def collect_output_paths(
     forecast_vs_actual_csv_path: Path,
     model_comparison_path: Path,
     subgroup_metrics_path: Path,
+    model_backtest_path: Path,
     rate_backtest_path: Path,
     rate_backtest_metrics_path: Path,
     rate_subgroup_metrics_path: Path,
     intraday_updates_path: Path | None = None,
+    monthly_budget_summary_path: Path | None = None,
 ) -> dict[str, str]:
     """Return the public output path mapping used by CLI and Streamlit."""
     return {
@@ -133,10 +166,12 @@ def collect_output_paths(
         "forecast_vs_actual": str(forecast_vs_actual_csv_path),
         "baseline_vs_tailored_model_metrics": str(model_comparison_path),
         "subgroup_backtest_metrics": str(subgroup_metrics_path),
+        "model_backtest_results": str(model_backtest_path),
         "rate_backtest_results": str(rate_backtest_path),
         "rate_backtest_metrics": str(rate_backtest_metrics_path),
         "rate_subgroup_backtest_metrics": str(rate_subgroup_metrics_path),
         "intraday_recommendation_changes": str(intraday_updates_path) if intraday_updates_path else "",
+        "monthly_budget_summary": str(monthly_budget_summary_path) if monthly_budget_summary_path else "",
     }
 
 
@@ -153,6 +188,7 @@ def build_pipeline_summary(
     tailored_summary_df: pd.DataFrame,
     model_comparison_df: pd.DataFrame | None = None,
     rate_backtest_metrics_df: pd.DataFrame | None = None,
+    monthly_budget_summary_df: pd.DataFrame | None = None,
 ) -> dict:
     """Build the public summary payload returned by run_pipeline."""
     summary = {
@@ -171,4 +207,6 @@ def build_pipeline_summary(
         summary["model_comparison"] = model_comparison_df.to_dict("records")
     if rate_backtest_metrics_df is not None and len(rate_backtest_metrics_df) > 0:
         summary["rate_backtest_metrics"] = rate_backtest_metrics_df.to_dict("records")
+    if monthly_budget_summary_df is not None and len(monthly_budget_summary_df) > 0:
+        summary["monthly_budget_summaries"] = monthly_budget_summary_df.to_dict("records")
     return summary

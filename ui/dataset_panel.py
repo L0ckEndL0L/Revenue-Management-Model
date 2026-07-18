@@ -85,6 +85,7 @@ def load_demo_dataset_payload() -> tuple[dict[str, object], list[str]]:
 def _load_demo_dataset() -> list[str]:
     payload, warnings = load_demo_dataset_payload()
 
+    st.session_state.pop("last_completed_run_results", None)
     st.session_state.historical_df = payload["historical_df"]
     st.session_state.future_df = payload["future_df"]
     st.session_state.events_df = payload["events_df"]
@@ -116,6 +117,7 @@ def _apply_loaded_dataset(
     manual_rooms,
     tailored_settings,
 ) -> None:
+    st.session_state.pop("last_completed_run_results", None)
     st.session_state.loaded_dataset_name = dataset_name
     st.session_state.historical_df = hist_df
     st.session_state.future_df = fut_df

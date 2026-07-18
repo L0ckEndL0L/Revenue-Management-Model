@@ -314,3 +314,59 @@ def build_month_forecast_budget_context(
         budget_gap=budget_gap,
         required_adr_remaining=required_adr_remaining,
     )
+
+
+def build_monthly_forecast_budget_summaries(
+    *,
+    future_context: pd.DataFrame,
+    historical_df: pd.DataFrame,
+    historical_metrics: pd.DataFrame,
+    stly_df: pd.DataFrame | None,
+    as_of_date: pd.Timestamp,
+    default_current_rate,
+    budget_path: str | None,
+    config: dict,
+) -> pd.DataFrame:
+    """Build calendar-sorted forecast and budget summaries for every future month."""
+    if future_context is None or len(future_context) == 0:
+        return pd.DataFrame()
+
+    dated = future_context.copy()
+    dated["stay_date"] = pd.to_datetime(dated["stay_date"], errors="coerce")
+    dated = dated.dropna(subset=["stay_date"])
+    if len(dated) == 0:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    month_keys = (
+        dated[["stay_date"]]
+        .assign(year=lambda frame: frame["stay_date"].dt.year, month=lambda frame: frame["stay_date"].dt.month)
+        [["year", "month"]]
+        .drop_duplicates()
+        .sort_values(["year", "month"])
+    )
+    for month_key in month_keys.itertuples(index=False):
+        month_future = dated[
+            (dated["stay_date"].dt.year == int(month_key.year))
+            & (dated["stay_date"].dt.month == int(month_key.month))
+        ].copy()
+        context = build_month_forecast_budget_context(
+            future_context=month_future,
+            historical_df=historical_df,
+            historical_metrics=historical_metrics,
+            stly_df=stly_df,
+            as_of_date=as_of_date,
+            default_current_rate=default_current_rate,
+            budget_path=budget_path,
+            config=config,
+        )
+        rows.append(
+            {
+                "year": int(context.target_year),
+                "month": int(context.target_month),
+                "month_name": context.anchor_date.strftime("%B"),
+                **context.budget_summary,
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["year", "month"]).reset_index(drop=True)

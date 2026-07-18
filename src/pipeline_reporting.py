@@ -135,7 +135,7 @@ def write_evaluation_outputs(
     baseline_rules_df: pd.DataFrame,
     elasticity: float,
     tailored_settings: dict | None = None,
-) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path, Path, Path, Path, Path, Path, Path]:
+) -> tuple[dict, pd.DataFrame, float, pd.DataFrame, Path, Path, Path, Path, Path, Path, Path, Path, Path]:
     """Write evaluation CSV outputs and return chart-ready forecast data."""
     model_df = prepare_forecast_frame(daily_df=historical_metrics, events_df=events_df, stly_df=stly_df)
     default_property_type = str((tailored_settings or {}).get("property_type", "Unspecified")).strip() or "Unspecified"
@@ -144,6 +144,8 @@ def write_evaluation_outputs(
     else:
         model_df["property_type"] = model_df["property_type"].fillna(default_property_type)
     backtest_df = evaluate_backtest(model_df=model_df, as_of_date=as_of_date)
+    model_backtest_path = output_dir / "model_backtest_results.csv"
+    backtest_df.to_csv(model_backtest_path, index=False)
     forecast_metrics = calculate_forecast_metrics(
         actual=backtest_df.get("actual_rooms_sold", pd.Series(dtype=float)),
         predicted=backtest_df.get("baseline_rooms_sold", pd.Series(dtype=float)),
@@ -189,6 +191,12 @@ def write_evaluation_outputs(
             "actual_rooms_sold": model_df["rooms_sold"],
             "baseline_rooms_sold": full_baseline_pred["forecast_rooms_sold"],
             "enhanced_rooms_sold": full_enhanced_pred["forecast_rooms_sold"],
+            "raw_tailored_rooms_sold": full_enhanced_pred["raw_tailored_rooms_sold"],
+            "selected_model": full_enhanced_pred["selected_model"],
+            "calibration_rows": full_enhanced_pred["calibration_rows"],
+            "baseline_calibration_score": full_enhanced_pred["baseline_calibration_score"],
+            "tailored_calibration_score": full_enhanced_pred["tailored_calibration_score"],
+            "confidence_weight": full_enhanced_pred["confidence_weight"],
             "actual_revenue": model_df["room_revenue"],
             "baseline_revenue": full_baseline_pred["forecast_revenue"],
             "enhanced_revenue": full_enhanced_pred["forecast_revenue"],
@@ -208,6 +216,7 @@ def write_evaluation_outputs(
         forecast_vs_actual_csv_path,
         model_comparison_path,
         subgroup_metrics_path,
+        model_backtest_path,
         rate_backtest_path,
         rate_backtest_metrics_path,
         rate_subgroup_metrics_path,

@@ -354,7 +354,11 @@ def build_priority_lists(
     df["compression_score"] = np.clip((df["forecast_occ"] - 0.80) * 5.0, 0.0, None)
     df["under_pacing_score"] = np.clip((target_occ - df["forecast_occ"]) * 5.0, 0.0, None)
     df["event_score"] = df["event_signal"].map({"none": 0.0, "low": 0.5, "med": 1.0, "high": 1.5}).fillna(0.0)
-    df["budget_score"] = np.clip(abs(float(budget_gap)) / 50000.0, 0.0, 2.0)
+    if "budget_gap" in df.columns:
+        row_budget_gap = pd.to_numeric(df["budget_gap"], errors="coerce").fillna(float(budget_gap))
+        df["budget_score"] = np.clip(row_budget_gap.abs() / 50000.0, 0.0, 2.0)
+    else:
+        df["budget_score"] = np.clip(abs(float(budget_gap)) / 50000.0, 0.0, 2.0)
 
     df["priority_score"] = (
         1.2 * df["compression_score"]

@@ -29,6 +29,9 @@ from ui.tailored_panel import (
 from ui.upload_panel import render_upload_panel
 
 
+LAST_RUN_RESULTS_KEY = "last_completed_run_results"
+
+
 def _is_running_in_streamlit() -> bool:
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -141,6 +144,14 @@ def _run_dashboard() -> None:
     st.caption("Tailored refresh reuses the data already loaded in session, so you can update the median rate without re-importing files.")
 
     if not (run_clicked or refresh_tailored_clicked):
+        cached_run = st.session_state.get(LAST_RUN_RESULTS_KEY)
+        if cached_run:
+            render_results(
+                output_paths=cached_run["output_paths"],
+                summary=cached_run["summary"],
+                use_interactive_charts=bool(cached_run["use_interactive_charts"]),
+                timestamp=str(cached_run["timestamp"]),
+            )
         return
 
     hist_preview = upload_state["hist_preview"]
@@ -228,6 +239,12 @@ def _run_dashboard() -> None:
 
         progress.progress(100, text="Completed")
         st.success(f"Outputs created in: {output_paths['output_dir']}")
+        st.session_state[LAST_RUN_RESULTS_KEY] = {
+            "output_paths": output_paths,
+            "summary": summary,
+            "use_interactive_charts": pricing_config["use_interactive_charts"],
+            "timestamp": timestamp,
+        }
         render_results(
             output_paths=output_paths,
             summary=summary,

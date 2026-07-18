@@ -137,9 +137,21 @@ def test_run_pipeline_creates_date_level_tailored_exports(tmp_path) -> None:
 
     tailored_results_path = Path(output_paths["tailored_model_results"])
     tailored_summary_path = Path(output_paths["tailored_model_summary"])
+    model_backtest_path = Path(output_paths["model_backtest_results"])
 
     assert tailored_results_path.exists()
     assert tailored_summary_path.exists()
+    assert model_backtest_path.exists()
+
+    model_backtest = pd.read_csv(model_backtest_path)
+    assert {
+        "selected_model",
+        "raw_tailored_rooms_sold",
+        "calibration_rows",
+        "baseline_calibration_score",
+        "tailored_calibration_score",
+        "confidence_weight",
+    }.issubset(model_backtest.columns)
 
     tailored_results = pd.read_csv(tailored_results_path)
     tailored_summary = pd.read_csv(tailored_summary_path)

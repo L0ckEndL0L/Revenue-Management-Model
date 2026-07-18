@@ -22,7 +22,10 @@ from src.ingest import process_file
 from src.intraday import process_intraday_updates
 from src.metrics import calculate_daily_metrics, export_metrics
 from src.pace import calculate_pace_analysis, load_historical_data
-from src.pipeline_budget_forecast import build_month_forecast_budget_context
+from src.pipeline_budget_forecast import (
+    build_month_forecast_budget_context,
+    build_monthly_forecast_budget_summaries,
+)
 from src.pipeline_config import build_pipeline_config
 from src.pipeline_inputs import prepare_future_dataset, select_user_comparison_frames
 from src.pipeline_outputs import (
@@ -244,6 +247,18 @@ def run_pipeline(
         config=config,
     )
     budget_summary = month_budget_context.budget_summary
+    monthly_budget_summary_df = build_monthly_forecast_budget_summaries(
+        future_context=future_context,
+        historical_df=historical_df,
+        historical_metrics=historical_metrics,
+        stly_df=stly_df,
+        as_of_date=as_of_date,
+        default_current_rate=default_current_rate,
+        budget_path=budget_path,
+        config=config,
+    )
+    monthly_budget_summary_path = output_dir / "monthly_budget_summary.csv"
+    monthly_budget_summary_df.to_csv(monthly_budget_summary_path, index=False)
     # Baseline policy output for comparison.
     baseline_rules_df = generate_rate_recommendations(
         pace_df.rename(columns={"current_adr": "current_adr"}),
@@ -269,6 +284,7 @@ def run_pipeline(
         pricing_config=pricing_config,
         elasticity=elasticity,
         budget_summary=budget_summary,
+        monthly_budget_summary_df=monthly_budget_summary_df,
         tailored_settings=config.get("tailored_settings"),
         target_occ=float(config.get("target_occ", 0.80)),
         comp_set_df=config.get("comp_set_df"),
@@ -284,6 +300,7 @@ def run_pipeline(
         forecast_vs_actual_csv_path,
         model_comparison_path,
         subgroup_metrics_path,
+        model_backtest_path,
         rate_backtest_path,
         rate_backtest_metrics_path,
         rate_subgroup_metrics_path,
@@ -336,10 +353,12 @@ def run_pipeline(
         forecast_vs_actual_csv_path=forecast_vs_actual_csv_path,
         model_comparison_path=model_comparison_path,
         subgroup_metrics_path=subgroup_metrics_path,
+        model_backtest_path=model_backtest_path,
         rate_backtest_path=rate_backtest_path,
         rate_backtest_metrics_path=rate_backtest_metrics_path,
         rate_subgroup_metrics_path=rate_subgroup_metrics_path,
         intraday_updates_path=intraday_changes_path,
+        monthly_budget_summary_path=monthly_budget_summary_path,
     )
 
     summary = build_pipeline_summary(
@@ -354,6 +373,7 @@ def run_pipeline(
         tailored_summary_df=tailored_summary_df,
         model_comparison_df=pd.read_csv(model_comparison_path),
         rate_backtest_metrics_df=pd.read_csv(rate_backtest_metrics_path),
+        monthly_budget_summary_df=monthly_budget_summary_df,
     )
     if intraday_warnings:
         summary["intraday_update_warnings"] = intraday_warnings

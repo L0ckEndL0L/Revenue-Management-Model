@@ -9,6 +9,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from src.evaluation import MONTH_ORDER
 from src.yoy import summarize_yoy
 from ui.chart_helpers import interactive_bar_chart, interactive_line_chart, show_chart
 from ui.tailored_panel import format_optional_currency, format_optional_timestamp
@@ -66,34 +67,159 @@ def model_metric_value(metrics_df: pd.DataFrame, model: str, metric: str) -> flo
     return pd.to_numeric(row.iloc[0].get(metric), errors="coerce")
 
 
+def sort_monthly_results(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Return result rows in calendar-month order without changing columns."""
+    if df is None or len(df) == 0 or "month" not in df.columns:
+        return df
+    month_rank = {month: rank for rank, month in enumerate(MONTH_ORDER)}
+    out = df.copy()
+    out["_month_rank"] = out["month"].map(month_rank).fillna(len(MONTH_ORDER))
+    secondary = [col for col in ["day_type", "model"] if col in out.columns]
+    return out.sort_values(["_month_rank", *secondary], kind="stable").drop(columns="_month_rank").reset_index(drop=True)
+
+
+def filter_frame_to_month(df: pd.DataFrame | None, year: int, month: int) -> pd.DataFrame | None:
+    """Filter dated output rows to the selected calendar month."""
+    if df is None or len(df) == 0:
+        return df
+    date_col = next((col for col in ["stay_date", "calendar_date"] if col in df.columns), None)
+    if date_col is None:
+        if "month" in df.columns:
+            month_name = pd.Timestamp(year=year, month=month, day=1).strftime("%B")
+            return df[df["month"].astype(str) == month_name].reset_index(drop=True)
+        return df
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+    return df[(dates.dt.year == year) & (dates.dt.month == month)].reset_index(drop=True)
+
+
+def model_comparison_for_month(model_backtest_df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if model_backtest_df is None or len(model_backtest_df) == 0:
+        return None
+    required = {"actual_rooms_sold", "baseline_rooms_sold", "enhanced_rooms_sold"}
+    if not required.issubset(model_backtest_df.columns):
+        return None
+    actual = pd.to_numeric(model_backtest_df["actual_rooms_sold"], errors="coerce")
+    rows = []
+    for model, column in [("Baseline Model", "baseline_rooms_sold"), ("Tailored Model", "enhanced_rooms_sold")]:
+        predicted = pd.to_numeric(model_backtest_df[column], errors="coerce")
+        valid = actual.notna() & predicted.notna()
+        errors = predicted[valid] - actual[valid]
+        rows.append(
+            {
+                "model": model,
+                "mae": float(errors.abs().mean()) if len(errors) else float("nan"),
+                "rmse": float((errors.pow(2).mean()) ** 0.5) if len(errors) else float("nan"),
+                "backtest_rows": int(valid.sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def render_results(
     output_paths: Dict[str, str],
     summary: Dict,
     use_interactive_charts: bool,
     timestamp: str,
 ) -> None:
-    budget_summary = summary.get("budget_summary", {})
-    forecast_metrics = summary.get("forecast_metrics", {})
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Revenue to date", f"${budget_summary.get('actual_revenue_to_date', 0.0):,.0f}")
-    c2.metric("Month-end forecast", f"${budget_summary.get('month_end_forecast', 0.0):,.0f}")
-    c3.metric("Budget variance", f"${budget_summary.get('variance_to_budget_abs', 0.0):,.0f}")
+    monthly_budget_df = safe_read_csv(output_paths.get("monthly_budget_summary", ""))
+    if monthly_budget_df is None or len(monthly_budget_df) == 0:
+        monthly_budget_df = pd.DataFrame(summary.get("monthly_budget_summaries", []))
 
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Required ADR remaining", f"${budget_summary.get('required_adr_remaining', 0.0):,.2f}")
-    c5.metric("Forecast MAE", f"{forecast_metrics.get('mae', float('nan')):.2f}")
-    c6.metric("Projected uplift", f"${summary.get('projected_uplift_vs_baseline', 0.0):,.0f}")
+    selected_year: int | None = None
+    selected_month_number: int | None = None
+    budget_summary = summary.get("budget_summary", {})
+    if len(monthly_budget_df) > 0 and {"year", "month"}.issubset(monthly_budget_df.columns):
+        monthly_budget_df = monthly_budget_df.copy()
+        monthly_budget_df["year"] = pd.to_numeric(monthly_budget_df["year"], errors="coerce").astype("Int64")
+        monthly_budget_df["month"] = pd.to_numeric(monthly_budget_df["month"], errors="coerce").astype("Int64")
+        monthly_budget_df = monthly_budget_df.dropna(subset=["year", "month"]).sort_values(["year", "month"])
+        month_choices = [
+            (int(row.year), int(row.month), pd.Timestamp(year=int(row.year), month=int(row.month), day=1).strftime("%B %Y"))
+            for row in monthly_budget_df.itertuples(index=False)
+        ]
+        selected_label = st.selectbox(
+            "Summary month",
+            options=[choice[2] for choice in month_choices],
+            key="summary_month_selector",
+        )
+        selected_year, selected_month_number, _ = next(choice for choice in month_choices if choice[2] == selected_label)
+        selected_budget = monthly_budget_df[
+            (monthly_budget_df["year"] == selected_year) & (monthly_budget_df["month"] == selected_month_number)
+        ]
+        if len(selected_budget):
+            budget_summary = selected_budget.iloc[0].to_dict()
+
+    forecast_metrics = dict(summary.get("forecast_metrics", {}))
+    projected_uplift = float(summary.get("projected_uplift_vs_baseline", 0.0))
+    baseline_rows = int(summary.get("baseline_rows", 0))
+    baseline_unavailable_rows = int(summary.get("baseline_unavailable_rows", 0))
+    tailored_summary = dict(summary.get("tailored_summary", {}))
+
+    if selected_year is not None and selected_month_number is not None:
+        selected_forecast_actual = filter_frame_to_month(
+            safe_read_csv(output_paths.get("forecast_vs_actual", "")), selected_year, selected_month_number
+        )
+        if selected_forecast_actual is not None and len(selected_forecast_actual) > 0:
+            actual = pd.to_numeric(selected_forecast_actual.get("actual_rooms_sold"), errors="coerce")
+            predicted = pd.to_numeric(selected_forecast_actual.get("enhanced_rooms_sold"), errors="coerce")
+            valid = actual.notna() & predicted.notna()
+            if valid.any():
+                forecast_metrics["mae"] = float((predicted[valid] - actual[valid]).abs().mean())
+
+        selected_rates = filter_frame_to_month(
+            safe_read_csv(output_paths.get("rate_recommendations", "")), selected_year, selected_month_number
+        )
+        if selected_rates is not None and "uplift_vs_current" in selected_rates.columns:
+            projected_uplift = float(pd.to_numeric(selected_rates["uplift_vs_current"], errors="coerce").fillna(0.0).sum())
+
+        selected_baseline = filter_frame_to_month(
+            safe_read_csv(output_paths.get("baseline_recommendations", "")), selected_year, selected_month_number
+        )
+        if selected_baseline is not None:
+            baseline_rows = int(len(selected_baseline))
+            baseline_unavailable_rows = int(
+                (selected_baseline.get("baseline_status", pd.Series(dtype=str)) == "UNAVAILABLE").sum()
+            )
+
+        selected_tailored = filter_frame_to_month(
+            safe_read_csv(output_paths.get("tailored_model_results", "")), selected_year, selected_month_number
+        )
+        if selected_tailored is not None and len(selected_tailored) > 0:
+            source = selected_tailored.get("median_rate_source", pd.Series(dtype=str)).astype(str)
+            tailored_summary.update(
+                {
+                    "avg_final_median_rate_used": pd.to_numeric(
+                        selected_tailored.get("median_rate_used"), errors="coerce"
+                    ).mean(),
+                    "manual_daily_median_dates": int((source == "Manual daily input").sum()),
+                    "dataset_derived_daily_median_dates": int((source == "Dataset-derived daily median").sum()),
+                    "global_fallback_median_dates": int((source == "Global manual median fallback").sum()),
+                    "missing_median_dates": int((source == "Missing median").sum()),
+                }
+            )
+
+    st.subheader("Monthly Summary")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Monthly budget", f"${budget_summary.get('monthly_budget', 0.0):,.0f}")
+    c2.metric("Revenue on books", f"${budget_summary.get('actual_revenue_to_date', 0.0):,.0f}")
+    c3.metric("Month-end forecast", f"${budget_summary.get('month_end_forecast', 0.0):,.0f}")
+    c4.metric("Budget variance", f"${budget_summary.get('variance_to_budget_abs', 0.0):,.0f}")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Budget variance %", f"{budget_summary.get('variance_to_budget_pct', 0.0):+.1f}%")
+    c6.metric("Required ADR remaining", f"${budget_summary.get('required_adr_remaining', 0.0):,.2f}")
+    c7.metric("Forecast MAE", f"{forecast_metrics.get('mae', float('nan')):.2f}")
+    c8.metric("Projected uplift", f"${projected_uplift:,.0f}")
     st.caption(
         "Baseline model rows: "
-        f"{summary.get('baseline_rows', 0)} "
-        f"(unavailable: {summary.get('baseline_unavailable_rows', 0)})"
+        f"{baseline_rows} "
+        f"(unavailable: {baseline_unavailable_rows})"
     )
     if summary.get("using_uploaded_comparison", False):
         st.caption("YoY and baseline comparison are using the two uploaded datasets as the prior-year/current-year pair.")
     if budget_summary.get("budget_warning"):
         st.warning(f"Budget comparison skipped: {budget_summary['budget_warning']}")
 
-    tailored_summary = summary.get("tailored_summary", {})
     st.subheader("Tailored Model")
     t1, t2, t3 = st.columns(3)
     t1.metric("Avg final median used", format_optional_currency(tailored_summary.get("avg_final_median_rate_used")))
@@ -115,6 +241,9 @@ def render_results(
         output_paths,
         summary.get("yoy_summary", {}),
     )
+    if selected_year is not None and selected_month_number is not None and len(yoy_df) > 0:
+        yoy_df = filter_frame_to_month(yoy_df, selected_year, selected_month_number)
+        yoy_summary = summarize_yoy(yoy_df) if yoy_df is not None and len(yoy_df) > 0 else {}
     if len(yoy_df) > 0:
         st.subheader("Year-over-Year (YoY)")
         y1, y2, y3 = st.columns(3)
@@ -158,9 +287,25 @@ def render_results(
         st.info("YoY data not available for this run. Add comparable STLY files under data/historical to enable YoY.")
 
     model_comparison_df = safe_read_csv(output_paths.get("baseline_vs_tailored_model_metrics", ""))
-    subgroup_metrics_df = safe_read_csv(output_paths.get("subgroup_backtest_metrics", ""))
+    if selected_year is not None and selected_month_number is not None:
+        selected_model_backtest = safe_read_csv(output_paths.get("model_backtest_results", ""))
+        selected_backtest_month_name = pd.Timestamp(
+            year=selected_year, month=selected_month_number, day=1
+        ).strftime("%B")
+        if selected_model_backtest is not None and "month" in selected_model_backtest.columns:
+            selected_model_backtest = selected_model_backtest[
+                selected_model_backtest["month"].astype(str) == selected_backtest_month_name
+            ].reset_index(drop=True)
+        monthly_model_comparison = model_comparison_for_month(selected_model_backtest)
+        if monthly_model_comparison is not None:
+            model_comparison_df = monthly_model_comparison
+    subgroup_metrics_df = sort_monthly_results(safe_read_csv(output_paths.get("subgroup_backtest_metrics", "")))
+    selected_subgroup_metrics_df = subgroup_metrics_df
     rate_backtest_metrics_df = safe_read_csv(output_paths.get("rate_backtest_metrics", ""))
-    rate_subgroup_metrics_df = safe_read_csv(output_paths.get("rate_subgroup_backtest_metrics", ""))
+    rate_backtest_df = sort_monthly_results(safe_read_csv(output_paths.get("rate_backtest_results", "")))
+    rate_subgroup_metrics_df = sort_monthly_results(safe_read_csv(output_paths.get("rate_subgroup_backtest_metrics", "")))
+    selected_rate_backtest_df = rate_backtest_df
+    selected_rate_subgroup_df = rate_subgroup_metrics_df
     intraday_changes_df = safe_read_csv(output_paths.get("intraday_recommendation_changes", ""))
     st.subheader("Baseline vs Tailored Model")
     if model_comparison_df is not None and len(model_comparison_df) > 0:
@@ -184,12 +329,68 @@ def render_results(
 
     if subgroup_metrics_df is not None and len(subgroup_metrics_df) > 0:
         st.caption("Subgroup analysis by property type, event period, month, and weekday/weekend.")
-        st.dataframe(subgroup_metrics_df, use_container_width=True)
+        selected_month = (
+            pd.Timestamp(year=selected_year, month=selected_month_number, day=1).strftime("%B")
+            if selected_year is not None and selected_month_number is not None
+            else "All months"
+        )
+        if selected_month != "All months":
+            selected_subgroup_metrics_df = subgroup_metrics_df[
+                subgroup_metrics_df["month"].astype(str) == selected_month
+            ].reset_index(drop=True)
+        st.dataframe(selected_subgroup_metrics_df, use_container_width=True)
 
     st.subheader("Rate Backtesting")
     if rate_backtest_metrics_df is not None and len(rate_backtest_metrics_df) > 0:
         st.dataframe(rate_backtest_metrics_df, use_container_width=True)
-        st.caption("Actual ADR/rate is compared against baseline and RateAnchor tailored recommendations. Negative differences mean lower error than baseline.")
+        st.caption(
+            "Rolling backtest recommendations use only prior stay dates. Actual ADR is held out until scoring; "
+            "negative differences mean lower error than baseline."
+        )
+        if rate_subgroup_metrics_df is not None and len(rate_subgroup_metrics_df) > 0:
+            available_rate_months = [
+                month for month in MONTH_ORDER if month in set(rate_subgroup_metrics_df["month"].astype(str))
+            ]
+            other_rate_months = sorted(
+                set(rate_subgroup_metrics_df["month"].astype(str)) - set(available_rate_months)
+            )
+            rate_filter_1, rate_filter_2 = st.columns(2)
+            selected_rate_month = (
+                pd.Timestamp(year=selected_year, month=selected_month_number, day=1).strftime("%B")
+                if selected_year is not None and selected_month_number is not None
+                else "All months"
+            )
+            rate_filter_1.caption(f"Rate month: {selected_rate_month}")
+            available_day_types = [
+                day_type
+                for day_type in ["Weekday", "Weekend"]
+                if day_type in set(rate_subgroup_metrics_df["day_type"].astype(str))
+            ]
+            selected_rate_day_type = rate_filter_2.selectbox(
+                "Rate day type",
+                ["All day types", *available_day_types],
+                key="rate_backtest_day_type_selector",
+            )
+            if selected_rate_month != "All months":
+                selected_rate_subgroup_df = selected_rate_subgroup_df[
+                    selected_rate_subgroup_df["month"].astype(str) == selected_rate_month
+                ]
+                if selected_rate_backtest_df is not None:
+                    selected_rate_backtest_df = selected_rate_backtest_df[
+                        selected_rate_backtest_df["month"].astype(str) == selected_rate_month
+                    ]
+            if selected_rate_day_type != "All day types":
+                selected_rate_subgroup_df = selected_rate_subgroup_df[
+                    selected_rate_subgroup_df["day_type"].astype(str) == selected_rate_day_type
+                ]
+                if selected_rate_backtest_df is not None:
+                    selected_rate_backtest_df = selected_rate_backtest_df[
+                        selected_rate_backtest_df["day_type"].astype(str) == selected_rate_day_type
+                    ]
+            selected_rate_subgroup_df = selected_rate_subgroup_df.reset_index(drop=True)
+            if selected_rate_backtest_df is not None:
+                selected_rate_backtest_df = selected_rate_backtest_df.reset_index(drop=True)
+            st.dataframe(selected_rate_subgroup_df, use_container_width=True)
     else:
         st.info("Rate backtest metrics are not available for this run.")
 
@@ -201,6 +402,7 @@ def render_results(
 
     st.subheader("Outputs")
     tabs = st.tabs([
+        "Monthly Budget",
         "Forecast",
         "Baseline",
         "Tailored Model",
@@ -217,45 +419,51 @@ def render_results(
     ])
 
     with tabs[0]:
+        st.dataframe(monthly_budget_df if monthly_budget_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[1]:
         df = safe_read_csv(output_paths.get("forecast", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[1]:
+    with tabs[2]:
         df = safe_read_csv(output_paths.get("baseline_recommendations", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[2]:
+    with tabs[3]:
         tailored_summary_df = safe_read_csv(output_paths.get("tailored_model_summary", ""))
         tailored_results_df = safe_read_csv(output_paths.get("tailored_model_results", ""))
         if tailored_summary_df is not None:
             st.dataframe(tailored_summary_df, use_container_width=True)
         st.dataframe(tailored_results_df if tailored_results_df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[3]:
+    with tabs[4]:
         df = safe_read_csv(output_paths.get("rate_recommendations", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[4]:
+    with tabs[5]:
         df = safe_read_csv(output_paths.get("top_raise_opportunities", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[5]:
+    with tabs[6]:
         df = safe_read_csv(output_paths.get("top_rescue_dates", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[6]:
+    with tabs[7]:
         df = safe_read_csv(output_paths.get("top_monitor_dates", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[7]:
+    with tabs[8]:
         df = safe_read_csv(output_paths.get("evaluation_metrics", ""))
         st.dataframe(df if df is not None else pd.DataFrame(), use_container_width=True)
-    with tabs[8]:
-        st.dataframe(model_comparison_df if model_comparison_df is not None else pd.DataFrame(), use_container_width=True)
     with tabs[9]:
-        st.dataframe(subgroup_metrics_df if subgroup_metrics_df is not None else pd.DataFrame(), use_container_width=True)
+        st.dataframe(model_comparison_df if model_comparison_df is not None else pd.DataFrame(), use_container_width=True)
     with tabs[10]:
-        rate_backtest_df = safe_read_csv(output_paths.get("rate_backtest_results", ""))
-        if rate_backtest_df is not None:
-            st.dataframe(rate_backtest_df, use_container_width=True)
-        if rate_subgroup_metrics_df is not None:
-            st.dataframe(rate_subgroup_metrics_df, use_container_width=True)
+        st.caption("Use the month selector above to move between monthly results.")
+        st.dataframe(
+            selected_subgroup_metrics_df if selected_subgroup_metrics_df is not None else pd.DataFrame(),
+            use_container_width=True,
+        )
     with tabs[11]:
-        st.dataframe(intraday_changes_df if intraday_changes_df is not None else pd.DataFrame(), use_container_width=True)
+        st.caption("Use the rate month and day-type selectors above to navigate the rolling backtest.")
+        if selected_rate_backtest_df is not None:
+            st.dataframe(selected_rate_backtest_df, use_container_width=True)
+        if selected_rate_subgroup_df is not None:
+            st.dataframe(selected_rate_subgroup_df, use_container_width=True)
     with tabs[12]:
+        st.dataframe(intraday_changes_df if intraday_changes_df is not None else pd.DataFrame(), use_container_width=True)
+    with tabs[13]:
         st.dataframe(yoy_df if len(yoy_df) > 0 else pd.DataFrame(), use_container_width=True)
 
     st.subheader("Charts")
@@ -265,7 +473,7 @@ def render_results(
         priority_df = safe_read_csv(output_paths.get("top_monitor_dates", ""))
         forecast_vs_actual_df = safe_read_csv(output_paths.get("forecast_vs_actual", ""))
         model_comparison_df = safe_read_csv(output_paths.get("baseline_vs_tailored_model_metrics", ""))
-        subgroup_metrics_df = safe_read_csv(output_paths.get("subgroup_backtest_metrics", ""))
+        subgroup_metrics_df = selected_subgroup_metrics_df
 
         ch1, ch2 = st.columns(2)
         with ch1:
@@ -433,6 +641,7 @@ def render_results(
 
     st.subheader("Downloads")
     for key in [
+        "monthly_budget_summary",
         "forecast",
         "baseline_recommendations",
         "tailored_model_results",

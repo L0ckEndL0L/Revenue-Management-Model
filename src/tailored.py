@@ -36,6 +36,15 @@ DAILY_MEDIAN_COLUMNS = [
     "last_median_update_timestamp",
 ]
 
+
+def _finite_float_or_default(value: Any, default: float = 0.0) -> float:
+    """Return a finite float, replacing missing or invalid model inputs."""
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return numeric_value if np.isfinite(numeric_value) else float(default)
+
 SEGMENT_FOCUS_PRESETS = {
     "balanced": {
         "demand_bias": 0.00,
@@ -749,8 +758,8 @@ def build_tailored_recommendations(
         adr = float(getattr(row, "adr", np.nan)) if pd.notna(getattr(row, "adr", np.nan)) else np.nan
         occupancy = float(getattr(row, "occupancy", np.nan)) if pd.notna(getattr(row, "occupancy", np.nan)) else np.nan
         stay_date = pd.Timestamp(getattr(row, "stay_date"))
-        pace_variance = float(getattr(row, "pace_variance", 0.0) or 0.0)
-        event_pct = float(getattr(row, "event_pct", 0.0) or 0.0)
+        pace_variance = _finite_float_or_default(getattr(row, "pace_variance", 0.0))
+        event_pct = _finite_float_or_default(getattr(row, "event_pct", 0.0))
         impact_level = getattr(row, "impact_level", None)
         median_rate_used = getattr(row, "final_median_rate_used", np.nan)
         median_rate_source = getattr(row, "median_rate_source", MISSING_MEDIAN_SOURCE)

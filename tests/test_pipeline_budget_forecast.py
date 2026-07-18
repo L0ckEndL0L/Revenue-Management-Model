@@ -5,7 +5,10 @@ import math
 import pandas as pd
 
 from src.metrics import calculate_daily_metrics
-from src.pipeline_budget_forecast import build_month_forecast_budget_context
+from src.pipeline_budget_forecast import (
+    build_month_forecast_budget_context,
+    build_monthly_forecast_budget_summaries,
+)
 
 
 def test_build_month_forecast_budget_context_returns_numeric_budget_fields(tmp_path) -> None:
@@ -74,3 +77,50 @@ def test_build_month_forecast_budget_context_returns_numeric_budget_fields(tmp_p
     assert isinstance(context.budget_gap, float)
     assert isinstance(context.remaining_budget_total, float)
     assert isinstance(context.required_adr_remaining, float)
+
+
+def test_build_monthly_budget_summaries_uses_each_months_target(tmp_path) -> None:
+    historical_df = pd.DataFrame(
+        {
+            "stay_date": pd.date_range("2025-01-01", periods=60, freq="D"),
+            "rooms_available": [100] * 60,
+            "rooms_sold": [60] * 60,
+            "room_revenue": [7200.0] * 60,
+        }
+    )
+    historical_metrics = calculate_daily_metrics(historical_df)
+    future_context = pd.DataFrame(
+        {
+            "stay_date": pd.to_datetime(["2026-01-15", "2026-02-15"]),
+            "rooms_available": [100, 100],
+            "rooms_sold": [40, 45],
+            "room_revenue": [5200.0, 6075.0],
+            "current_rate": [130.0, 135.0],
+            "forecast_rooms_sold": [55.0, 60.0],
+            "forecast_occ": [0.55, 0.60],
+        }
+    )
+    budget_path = tmp_path / "annual_budget.csv"
+    pd.DataFrame(
+        [
+            {"year": 2026, "month": 1, "budget_revenue": 220000.0},
+            {"year": 2026, "month": 2, "budget_revenue": 250000.0},
+        ]
+    ).to_csv(budget_path, index=False)
+
+    summaries = build_monthly_forecast_budget_summaries(
+        future_context=future_context,
+        historical_df=historical_df,
+        historical_metrics=historical_metrics,
+        stly_df=None,
+        as_of_date=pd.Timestamp("2025-12-31"),
+        default_current_rate=130.0,
+        budget_path=str(budget_path),
+        config={},
+    )
+
+    assert summaries[["month", "month_name"]].to_dict("records") == [
+        {"month": 1, "month_name": "January"},
+        {"month": 2, "month_name": "February"},
+    ]
+    assert summaries["monthly_budget"].round(2).tolist() == [220000.0, 250000.0]
