@@ -14,6 +14,7 @@ from pathlib import Path
 import streamlit as st
 
 from main import run_pipeline
+from src.run_retention import cleanup_old_run_directories
 from src.tailored import validate_tailored_settings
 from ui.budget_panel import coerce_budget_dataframe, render_budget_panel
 from ui.dataset_panel import render_dataset_panel
@@ -92,6 +93,16 @@ def _render_pricing_sidebar() -> dict:
             "default_current_rate": st.number_input("Default current rate fallback", min_value=0.0, value=120.0, step=1.0),
             "use_interactive_charts": st.checkbox("Use interactive charts", value=True),
             "output_base": st.text_input("Output folder", value="outputs"),
+            "completed_runs_to_keep": int(
+                st.number_input(
+                    "Completed runs to keep",
+                    min_value=1,
+                    max_value=50,
+                    value=10,
+                    step=1,
+                    help="After each successful simulation, older timestamped run folders are removed automatically.",
+                )
+            ),
         }
 
 
@@ -245,6 +256,15 @@ def _run_dashboard() -> None:
             "use_interactive_charts": pricing_config["use_interactive_charts"],
             "timestamp": timestamp,
         }
+        removed_runs = cleanup_old_run_directories(
+            pricing_config["output_base"],
+            keep_latest=int(pricing_config["completed_runs_to_keep"]),
+        )
+        if removed_runs:
+            st.caption(
+                f"Automatic cleanup removed {len(removed_runs)} older completed run"
+                + ("s." if len(removed_runs) != 1 else ".")
+            )
         render_results(
             output_paths=output_paths,
             summary=summary,
